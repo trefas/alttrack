@@ -1269,6 +1269,10 @@ def compare_show(
         None, "--status", "-s", help=f"Только группа: {', '.join(compare.STATUSES)}"
     ),
     limit: int = typer.Option(30, "--limit", "-n"),
+    extra: bool = typer.Option(
+        False, "--extra",
+        help="Показать и пакеты репозитория, отсутствующие в образе (правая сторона — ветка).",
+    ),
     csv_out: Optional[str] = typer.Option(
         None, "--csv", help="Записать отчёт в CSV (файл, или - для stdout)."
     ),
@@ -1284,7 +1288,7 @@ def compare_show(
             cmp_obj = compare.require_comparison(conn, cmp_id)
         except KeyError:
             _fail(f"сравнение {cmp_id} не найдено")
-        result = compare.report(conn, cmp_obj)
+        result = compare.report(conn, cmp_obj, include_right_extra=extra)
     finally:
         conn.close()
 
@@ -1297,6 +1301,11 @@ def compare_show(
             console.print(f"[green]CSV записан:[/green] {csv_out}")
         return
     console.print(f"[bold]#{cmp_obj.id}[/bold] {cmp_obj.title}")
+    if result.get("hidden_right_only"):
+        console.print(
+            f"[dim]скрыто {result['hidden_right_only']} пакетов репозитория, "
+            "отсутствующих в образе (--extra для показа)[/dim]"
+        )
     if status:
         rows = [r for r in result["rows"] if r["status"] == status]
         stats = {s: sum(1 for r in rows if r["status"] == s) for s in compare.STATUSES}

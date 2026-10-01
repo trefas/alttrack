@@ -222,3 +222,51 @@ def test_missing_list_raises(conn, client):
         raise AssertionError("expected KeyError")
     except KeyError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# repository comparisons: only packages present in the image
+# ---------------------------------------------------------------------------
+def test_report_filters_repository_only_rows(conn, client):
+    # file side uses binary names here so both lists join by the same key
+    left, _ = lists.save_file_list(
+        conn, text="bash-libs-5.2-alt1.x86_64\n", title="Образ",
+        source_branch="p11", client=client,
+    )
+    # right side = repository branch snapshot (kind == "branch")
+    client.binary_export["p10"] = [
+        {"name": "bash-libs", "version": "5.2", "release": "alt1",
+         "arch": "x86_64", "source": "bash"},
+        {"name": "grep", "version": "3.11", "release": "alt1",
+         "arch": "x86_64", "source": "grep"},
+    ]
+    right, _ = lists.save_branch_list(conn, client, branch="p10")
+    cmp_obj = compare.save(conn, left_id=left.id, right_id=right.id)
+
+    result = compare.report(conn, cmp_obj)
+    names = {r["name"] for r in result["rows"]}
+    assert "grep" not in names          # exists only in the repository → hidden
+    assert "bash-libs" in names         # shared package still compared
+    assert result["hidden_right_only"] == 1
+    assert result["stats"][compare.RIGHT_ONLY] == 0
+    assert result["stats"][compare.SAME] == 1
+    assert result["total"] == len(result["rows"])
+
+    full = compare.report(conn, cmp_obj, include_right_extra=True)
+    assert full["hidden_right_only"] == 0
+    assert full["stats"][compare.RIGHT_ONLY] == 1
+    grep = [r for r in full["rows"] if r["name"] == "grep"]
+    assert grep and grep[0]["status"] == compare.RIGHT_ONLY
+
+
+def test_report_keeps_right_only_for_non_branch_right(conn, client):
+    left, _ = _file_list(conn, client, title="A")
+    # right = another uploaded list: "repository" filtering must not apply
+    right, _ = lists.save_file_list(
+        conn, text="tmux-3.4-alt1.x86_64\n", title="B",
+        source_branch="p11", client=client,
+    )
+    cmp_obj = compare.save(conn, left_id=left.id, right_id=right.id)
+    result = compare.report(conn, cmp_obj)
+    assert result["hidden_right_only"] == 0
+    assert any(r["status"] == compare.RIGHT_ONLY for r in result["rows"])

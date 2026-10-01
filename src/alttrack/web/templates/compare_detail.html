@@ -11,20 +11,46 @@
 </p>
 
 <div class="chips">
-  <a class="chip {{ 'active' if not status }}" href="/compare/{{ cmp.id }}">все · {{ total }}</a>
+  <a class="chip {{ 'active' if not status }}" href="/compare/{{ cmp.id }}?{{ q_no_status }}">все · {{ total }}</a>
   {% for s in statuses %}
-  <a class="chip chip-{{ s }} {{ 'active' if status == s }}" href="/compare/{{ cmp.id }}?status={{ s }}">
+  {% if not (s == 'right_only' and right_list and right_list.kind == 'branch' and not include_extra) %}
+  <a class="chip chip-{{ s }} {{ 'active' if status == s }}" href="/compare/{{ cmp.id }}?{{ q_no_status }}&status={{ s }}">
     {{ status_labels[s] }} · {{ stats[s] }}
   </a>
+  {% endif %}
   {% endfor %}
 </div>
 
-<p>
-  <a class="btn btn-secondary btn-small" href="/compare/{{ cmp.id }}/export{% if status %}?status={{ status }}{% endif %}">
+{% if right_list and right_list.kind == 'branch' %}
+{% if include_extra %}
+<div class="hint">Показаны и пакеты репозитория, которых нет в образе ({{ stats['right_only'] }}) —
+  <a href="/compare/{{ cmp.id }}?{{ q_no_extra }}">сравнивать только по пакетам образа</a>.</div>
+{% else %}
+<div class="hint">Скрыто {{ hidden_right_only }} пакетов репозитория, отсутствующих в образе —
+  <a href="/compare/{{ cmp.id }}?{{ q }}&extra=1">показать их</a>.</div>
+{% endif %}
+{% endif %}
+
+{% if total_rows %}
+<div class="report-bar">
+  <form method="get" class="inline-form">
+    {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+    {% if include_extra %}<input type="hidden" name="extra" value="1">{% endif %}
+    <label>Строк на странице</label>
+    <select name="size" onchange="this.form.submit()">
+      {% for s in page_sizes %}<option value="{{ s }}" {{ 'selected' if s == size }}>{{ s }}</option>{% endfor %}
+    </select>
+    <noscript><button class="btn btn-small" type="submit">Применить</button></noscript>
+  </form>
+  <span class="muted small">строки {{ row_from }}–{{ row_to }} из {{ total_rows }}{% if status %} · фильтр: {{ status_labels[status] }}{% endif %}</span>
+  <a class="btn btn-secondary btn-small" style="margin-left:auto"
+     href="/compare/{{ cmp.id }}/export?{{ q }}">
     ⬇ CSV{% if status %} ({{ status_labels[status] }}){% endif %}
   </a>
-  {% if left_list %}<span class="muted small" style="margin-left:10px">строк в отчёте: {{ shown }}{% if shown >= 1000 %} (показаны первые 1000){% endif %}</span>{% endif %}
-</p>
+</div>
+
+{% include "pager.html" %}
+{% endif %}
 
 {% if rows %}
 <table id="report">
@@ -55,6 +81,10 @@
 {% else %}
 <div class="empty">Нет строк в этой группе.</div>
 {% endif %}
+{% if rows %}
+<p class="hint">Клик по строке — карточка пакета: версии и релизы слева/справа, исходный пакет, группа.</p>
+{% endif %}
+{% if total_rows %}{% include "pager.html" %}{% endif %}
 
 <div id="modal" class="modal-backdrop" hidden>
   <div class="modal card">
@@ -90,6 +120,9 @@ document.querySelectorAll('tr.rowlink').forEach(row => {
 });
 document.getElementById('modal').addEventListener('click', e => {
   if (e.target.id === 'modal') e.target.hidden = true;
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('modal').hidden = true;
 });
 </script>
 {% endblock %}

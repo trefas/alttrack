@@ -272,12 +272,30 @@ input[type=text], input[type=number], input[type=date], select, textarea {
   font: inherit; padding: 0; text-decoration: underline;
 }
 
-/* --- report row popup --- */
-tr.rowlink { cursor: pointer; }
+/* --- comparison report: size selector + pagination --- */
+.report-bar {
+  display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin: 12px 0 6px;
+}
+.report-bar .inline-form label { margin: 0; font-weight: 600; font-size: 13px; }
+.report-bar select { width: auto; }
+.pager { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+.pagebtn {
+  display: inline-block; min-width: 26px; text-align: center; padding: 3px 7px;
+  border: 1px solid #cbd5e1; border-radius: 6px; text-decoration: none;
+  color: inherit; font-size: 13px; background: #fff;
+}
+.pagebtn:hover { border-color: var(--accent); color: var(--accent); }
+.pagebtn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.pagedots { padding: 3px 2px; color: var(--muted); }
+
+/* --- report row popup --- */tr.rowlink { cursor: pointer; }
 tr.rowlink:hover td { background: #eff6ff; }
 .modal-backdrop {
   position: fixed; inset: 0; background: rgba(15, 23, 42, .55);
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
+/* the author rule above would otherwise beat the UA [hidden] style and the
+   popup would cover the report from the very first render */
+.modal-backdrop[hidden] { display: none; }
 .modal-backdrop .modal { max-width: 520px; width: 92%; margin: 0; }
 .modal h2 { margin-top: 0; word-break: break-all; }

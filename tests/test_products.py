@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 
 from alttrack import metasync, products
 from alttrack.models import TRACKING_STARTED
@@ -102,6 +103,42 @@ def test_track_from_image(conn, client):
     # image registered
     imgs = products.product_images(conn, product)
     assert len(imgs) == 1 and imgs[0]["kind"] == "release"
+
+
+def test_image_binding_is_idempotent(conn, client):
+    product = _setup(conn, client)
+    products.track_from_image(conn, client, product, UUID)
+    # update/track on the same image must not double-bind it
+    products.track_from_image(conn, client, product, UUID)
+    imgs = products.product_images(conn, product)
+    assert len(imgs) == 1
+    assert imgs[0]["package_count"] == 3
+
+
+def test_init_db_dedupes_product_images(conn):
+    from alttrack.db import init_db
+
+    # simulate a pre-index database that accumulated duplicate bindings
+    conn.execute("DROP INDEX IF EXISTS idx_product_images_uniq")
+    with conn:
+        conn.execute(
+            "INSERT INTO product_images (product_id, image_uuid, added_at) VALUES "
+            "(1, 'u1', '2025-01-01'), (1, 'u1', '2025-01-02')"
+        )
+    init_db(conn)
+
+    rows = conn.execute(
+        "SELECT added_at FROM product_images WHERE image_uuid='u1'"
+    ).fetchall()
+    assert [r["added_at"] for r in rows] == ["2025-01-01"]  # earliest binding kept
+    try:
+        conn.execute(
+            "INSERT INTO product_images (product_id, image_uuid, added_at) "
+            "VALUES (1, 'u1', 'x')"
+        )
+        raise AssertionError("expected IntegrityError")
+    except sqlite3.IntegrityError:
+        pass
 
 
 def test_track_respects_watch_flags(conn, client):

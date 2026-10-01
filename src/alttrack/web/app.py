@@ -21,6 +21,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from anyio import to_thread
+from urllib.parse import urlencode
 
 from .. import archive, compare, images, journal, lists, metasync, products, refs, refresh, tasks, watchlist
 from ..api import ALTRepoClient, ApiError, PackageNotFound
@@ -31,6 +32,22 @@ from ..models import EVENT_LABELS, EVENT_TYPES, TASK_EVENT_TYPES
 log = logging.getLogger("alttrack.web")
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+# Report page sizes offered on /compare/{id} (see the size selector).
+COMPARE_PAGE_SIZES: tuple[int, ...] = (10, 50, 100)
+
+
+def _page_window(page: int, count: int, width: int = 2) -> list[Any]:
+    """Compact pagination: first, last and ±``width`` pages around current."""
+    pages = {1, count, *range(max(1, page - width), min(count, page + width) + 1)}
+    out: list[Any] = []
+    prev: int | None = None
+    for p in sorted(pages):
+        if prev is not None and p > prev + 1:
+            out.append("…")
+        out.append(p)
+        prev = p
+    return out
 
 
 def _fmt_dt(value: Any) -> str:
@@ -812,6 +829,12 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 job_report = {"name": key, **job}
                 break
 
+        comparisons = compare.list_comparisons(conn, product_id=p.id)
+        cmp_right_kinds: dict[int, str] = {}
+        for c in comparisons:
+            right_list = lists.get_list(conn, c.right_list_id)
+            cmp_right_kinds[c.id] = right_list.kind if right_list else ""
+
         return templates.TemplateResponse(
             request,
             "product_detail.html",
@@ -821,7 +844,8 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 members=members,
                 counts=total_members,
                 product_images=products.product_images(conn, p),
-                comparisons=compare.list_comparisons(conn, product_id=p.id),
+                comparisons=comparisons,
+                cmp_right_kinds=cmp_right_kinds,
                 catalog=catalog_rows,
                 q=q or "",
                 state=state or "",
@@ -989,9 +1013,35 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
     # saved lists
     # ------------------------------------------------------------------
     @app.get("/lists", response_class=HTMLResponse)
-    def lists_page(request: Request, conn=Depends(get_conn)) -> Any:
+    def lists_page(
+        request: Request,
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
         product = current_product(conn, request)
         created = request.query_params.get("created")
+        error = request.query_params.get("error")
+        # The image selector needs the catalog: load it on first visit,
+        # same as the /images page does.
+        if images.catalog_is_empty(conn):
+            try:
+                images.refresh_catalog(conn, client)
+            except ApiError as exc:
+                error = error or f"не удалось загрузить каталог образов: {exc}"
+        catalog_rows = images.catalog(conn, limit=5000)
+        by_uuid = {str(r["uuid"]): r for r in catalog_rows}
+        bound = []
+        if product:
+            bound = [
+                by_uuid[uid]
+                for uid in (
+                    str(r["image_uuid"])
+                    for r in products.product_images(conn, product)
+                )
+                if uid in by_uuid
+            ]
+        bound_ids = {str(r["uuid"]) for r in bound}
+        others = [r for r in catalog_rows if str(r["uuid"]) not in bound_ids]
         return templates.TemplateResponse(
             request,
             "lists.html",
@@ -1000,8 +1050,10 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 rows=lists.list_lists(conn),
                 product=product,
                 arch_opts=refs.branch_arch_options(conn),
+                bound_images=bound,
+                catalog_images=others,
                 created=int(created) if created and created.isdigit() else None,
-                error=request.query_params.get("error"),
+                error=error,
             ),
         )
 
@@ -1102,6 +1154,10 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         product = current_product(conn, request)
         rows = lists.list_lists(conn)
         history = compare.list_comparisons(conn)
+        right_kinds: dict[int, str] = {}
+        for c in history:
+            right_list = lists.get_list(conn, c.right_list_id)
+            right_kinds[c.id] = right_list.kind if right_list else ""
         pre_left = request.query_params.get("left", "")
         pre_right = request.query_params.get("right", "")
         return templates.TemplateResponse(
@@ -1111,6 +1167,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 request,
                 rows=rows,
                 history=history,
+                right_kinds=right_kinds,
                 product=product,
                 status_labels=compare.STATUS_LABELS,
                 pre_left=pre_left,
@@ -1198,6 +1255,9 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         cmp_id: int,
         status: Optional[str] = None,
         csv: Optional[str] = None,
+        extra: Optional[str] = None,
+        page: int = Query(1, ge=1),
+        size: int = Query(50, ge=1),
         conn=Depends(get_conn),
     ) -> Any:
         cmp_obj = compare.get_comparison(conn, cmp_id)
@@ -1205,11 +1265,30 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             raise HTTPException(404, "сравнение не найдено")
         if status and status not in compare.STATUSES:
             status = None
-        result = compare.report(conn, cmp_obj)
+        if size not in COMPARE_PAGE_SIZES:
+            size = COMPARE_PAGE_SIZES[1]
+        include_extra = extra == "1"
+        result = compare.report(conn, cmp_obj, include_right_extra=include_extra)
         rows = result["rows"]
         if status:
             rows = [r for r in rows if r["status"] == status]
-        rows = rows[:1000]
+
+        # pagination: every row is reachable, page size is user-selectable
+        total_rows = len(rows)
+        page_count = max(1, -(-total_rows // size))  # ceil
+        page = min(page, page_count)
+        start = (page - 1) * size
+        page_rows = rows[start : start + size]
+
+        base: dict[str, Any] = {"size": size}
+        if include_extra:
+            base["extra"] = "1"
+        if status:
+            base["status"] = status
+        q = urlencode(base)  # full current state
+        q_no_status = urlencode({k: v for k, v in base.items() if k != "status"})
+        q_no_extra = urlencode({k: v for k, v in base.items() if k != "extra"})
+
         left_list = lists.get_list(conn, cmp_obj.left_list_id)
         right_list = lists.get_list(conn, cmp_obj.right_list_id)
         return templates.TemplateResponse(
@@ -1218,11 +1297,24 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             ctx(
                 request,
                 cmp=cmp_obj,
-                rows=rows,
+                rows=page_rows,
                 stats=result["stats"],
                 total=result["total"],
-                shown=len(rows),
+                shown=len(page_rows),
                 status=status or "",
+                include_extra=include_extra,
+                hidden_right_only=result["hidden_right_only"],
+                page=page,
+                page_count=page_count,
+                page_window=_page_window(page, page_count),
+                page_sizes=COMPARE_PAGE_SIZES,
+                size=size,
+                total_rows=total_rows,
+                row_from=start + 1 if total_rows else 0,
+                row_to=start + len(page_rows),
+                q=q,
+                q_no_status=q_no_status,
+                q_no_extra=q_no_extra,
                 status_labels=compare.STATUS_LABELS,
                 statuses=compare.STATUSES,
                 left_list=left_list,
@@ -1237,12 +1329,13 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
     def compare_export(
         cmp_id: int,
         status: Optional[str] = None,
+        extra: Optional[str] = None,
         conn=Depends(get_conn),
     ) -> Any:
         cmp_obj = compare.get_comparison(conn, cmp_id)
         if cmp_obj is None:
             raise HTTPException(404, "сравнение не найдено")
-        result = compare.report(conn, cmp_obj)
+        result = compare.report(conn, cmp_obj, include_right_extra=extra == "1")
         payload = compare.to_csv(result["rows"], status=status or None)
         from fastapi.responses import Response
 

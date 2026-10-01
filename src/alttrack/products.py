@@ -543,10 +543,15 @@ def _register_image(conn: sqlite3.Connection, product: Product, uuid: str, *, co
     row = images.find_image(conn, uuid)
     kind = "release" if row is not None and row["release"] == "release" else "other"
     with conn:
+        # Idempotent: track and update may both bind the same image; the
+        # original added_at is kept, metadata/count are refreshed.
         conn.execute(
             "INSERT INTO product_images "
             "(product_id, image_uuid, tag, kind, date, package_count, added_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (product_id, image_uuid) DO UPDATE SET "
+            "tag = excluded.tag, kind = excluded.kind, date = excluded.date, "
+            "package_count = excluded.package_count",
             (
                 product.id, uuid,
                 str(row["tag"]) if row else "",

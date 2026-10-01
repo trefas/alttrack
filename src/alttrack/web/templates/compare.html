@@ -8,20 +8,25 @@
 <div class="grid cols-2">
   <div class="card">
     <h2>Сравнить два списка</h2>
+    {% set syncing = refresh_running or job_running %}
+    {% if syncing %}
+    <div class="warning"><strong>Идёт синхронизация данных</strong> — пока она идёт, выбирать
+      списки нельзя: страница обновится автоматически, и выбор снова станет доступен.</div>
+    {% endif %}
     {% if rows | length >= 2 %}
     <form method="post" action="/compare/run" class="stack">
       <label>Слева (эталон)</label>
-      <select name="left" required>
+      <select name="left" required {{ 'disabled' if syncing }}>
         {% for l in rows %}<option value="{{ l.id }}" {{ 'selected' if pre_left == l.id | string }}>#{{ l.id }} · {{ l.title }} ({{ l.item_count }})</option>{% endfor %}
       </select>
       <label>Справа (текущее)</label>
-      <select name="right" required>
+      <select name="right" required {{ 'disabled' if syncing }}>
         {% for l in rows %}<option value="{{ l.id }}" {{ 'selected' if (pre_right == l.id | string) or (not pre_right and loop.index == 2) }}>#{{ l.id }} · {{ l.title }} ({{ l.item_count }})</option>{% endfor %}
       </select>
       <label>Название (необязательно)</label>
       <input type="text" name="title" placeholder="Образование 11.2 ↔ p11">
       <input type="hidden" name="product_id" value="{{ product.id if product else '' }}">
-      <button class="btn" type="submit">Сравнить и сохранить в историю</button>
+      <button class="btn" type="submit" {{ 'disabled' if syncing }}>Сравнить и сохранить в историю</button>
     </form>
     {% else %}
     <div class="empty">Нужно минимум два списка. <a href="/lists">Создать список →</a></div>
@@ -60,7 +65,9 @@
       <td><a href="/compare/{{ c.id }}"><strong>{{ c.title }}</strong></a></td>
       <td class="small">
         <span class="pill pill-ok">++ {{ c.stats.get('left_only', 0) }}</span>
+        {% if right_kinds.get(c.id) != 'branch' %}
         <span class="pill pill-bad">-- {{ c.stats.get('right_only', 0) }}</span>
+        {% endif %}
         <span class="pill pill-warn">&gt;&gt; {{ c.stats.get('changed', 0) }}</span>
         <span class="pill">== {{ c.stats.get('same', 0) }}</span>
       </td>

@@ -20,6 +20,10 @@ RIGHT_ONLY = "right_only"  # -- only in the right list
 CHANGED = "changed"        # >> different version/release
 SAME = "same"              # == identical
 
+# Right side of this list kind = whole repository branch: rows that exist
+# only there are excluded from reports (see report()).
+RIGHT_KIND = "branch"
+
 STATUSES: tuple[str, ...] = (LEFT_ONLY, RIGHT_ONLY, CHANGED, SAME)
 
 STATUS_LABELS: dict[str, str] = {
@@ -176,10 +180,32 @@ def require_comparison(conn: sqlite3.Connection, key: int | str) -> Comparison:
     return found
 
 
-def report(conn: sqlite3.Connection, comparison: Comparison) -> dict[str, Any]:
-    """Recompute the report of a stored comparison."""
+def report(
+    conn: sqlite3.Connection,
+    comparison: Comparison,
+    *,
+    include_right_extra: bool = False,
+) -> dict[str, Any]:
+    """Recompute the report of a stored comparison.
+
+    When the right side is a repository snapshot (``kind == "branch"``),
+    ``right_only`` rows are noise: a single image can never contain the whole
+    branch, so thousands of repository-only packages say nothing about the
+    product.  They are filtered out unless ``include_right_extra`` is set;
+    ``hidden_right_only`` tells how many were filtered (for an UI hint).
+    """
     result = compute(conn, comparison.left_list_id, comparison.right_list_id)
     result["comparison"] = comparison
+    result["hidden_right_only"] = 0
+    if str(result["right"].get("kind") or "") == RIGHT_KIND and not include_right_extra:
+        rows = [r for r in result["rows"] if r["status"] != RIGHT_ONLY]
+        stats = {s: 0 for s in STATUSES}
+        for row in rows:
+            stats[row["status"]] += 1
+        result["hidden_right_only"] = int(result["stats"].get(RIGHT_ONLY, 0))
+        result["rows"] = rows
+        result["stats"] = stats
+        result["total"] = len(rows)
     return result
 
 

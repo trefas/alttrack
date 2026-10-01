@@ -1,0 +1,20 @@
+{# Pagination for the comparison report; expects q, page, page_count,
+   page_window, row_from, row_to, total_rows, size from the caller. #}
+{% if total_rows > size %}
+<div class="pager">
+  {% if page > 1 %}
+  <a class="pagebtn" href="?{{ q }}&amp;page=1" title="первая страница">«</a>
+  <a class="pagebtn" href="?{{ q }}&amp;page={{ page - 1 }}" title="назад">‹</a>
+  {% endif %}
+  {% for p in page_window %}
+  {% if p == '…' %}<span class="pagedots">…</span>
+  {% elif p == page %}<span class="pagebtn active">{{ p }}</span>
+  {% else %}<a class="pagebtn" href="?{{ q }}&amp;page={{ p }}">{{ p }}</a>{% endif %}
+  {% endfor %}
+  {% if page < page_count %}
+  <a class="pagebtn" href="?{{ q }}&amp;page={{ page + 1 }}" title="вперёд">›</a>
+  <a class="pagebtn" href="?{{ q }}&amp;page={{ page_count }}" title="последняя страница">»</a>
+  {% endif %}
+  <span class="muted small" style="margin-left:8px">страница {{ page }} из {{ page_count }}</span>
+</div>
+{% endif %}

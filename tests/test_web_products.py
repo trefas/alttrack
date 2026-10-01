@@ -294,6 +294,47 @@ def test_compare_run_and_report(web):
     assert "bash" in csv_resp.text
 
 
+def test_compare_report_pagination(web, conn):
+    client, fake = web
+    left, _ = lists_mod.save_file_list(
+        conn, text="\n".join(f"p{i}-1.0-alt1.x86_64" for i in range(25)),
+        title="L", source_branch="p11", client=fake,
+    )
+    right, _ = lists_mod.save_file_list(
+        conn, text="p0-2.0-alt1.x86_64\n", title="R",
+        source_branch="p11", client=fake,
+    )
+    resp = client.post(
+        "/compare/run", data={"left": left.id, "right": right.id},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    p1 = client.get("/compare/1?size=10")
+    assert p1.status_code == 200
+    assert "строки 1–10 из 25" in p1.text
+    assert "страница 1 из 3" in p1.text
+    assert 'value="10" selected' in p1.text
+    # pager links preserve the chosen size
+    assert "?size=10&amp;page=2" in p1.text
+
+    p2 = client.get("/compare/1?size=10&page=2")
+    assert "строки 11–20 из 25" in p2.text
+    p3 = client.get("/compare/1?size=10&page=3")
+    assert "строки 21–25 из 25" in p3.text
+
+    # out-of-range page clamps to the last one; big page covers everything
+    assert "строки 21–25 из 25" in client.get("/compare/1?size=10&page=99").text
+    assert "строки 1–25 из 25" in client.get("/compare/1?size=100").text
+    # unknown page sizes fall back to the default (50)
+    assert 'value="50" selected' in client.get("/compare/1?size=25").text
+
+    # the status filter keeps the page size
+    filtered = client.get("/compare/1?size=10&status=left_only")
+    assert "строки 1–10 из 24" in filtered.text
+    assert 'value="10" selected' in filtered.text
+
+
 def test_compare_page_history_and_delete(web):
     client, _ = web
     left, right = _two_lists(client)
@@ -313,10 +354,66 @@ def test_preset_release_vs_branch(web, conn):
     )
     assert resp.status_code == 303
     assert resp.headers["location"].startswith("/compare/")
-    page = client.get(resp.headers["location"])
+    url = resp.headers["location"]
+    page = client.get(url)
     assert page.status_code == 200
-    # coreutils only in repo (right), bash/zsh shared with different versions
+    # right side is the repository branch: packages missing from the image
+    # (coreutils) are hidden — they say nothing about the product
+    assert "coreutils" not in page.text
+    assert "Скрыто" in page.text and "пакетов репозитория" in page.text
+    assert "-- только справа" not in page.text
+    # shared packages with different versions are still reported
+    assert "bash" in page.text
+    # the row popup is hidden until a row is clicked
+    assert '<div id="modal" class="modal-backdrop" hidden>' in page.text
+    # …and the hidden rows are available on demand
+    page = client.get(url + "?extra=1")
     assert "coreutils" in page.text
+    assert "-- только справа" in page.text
+    # CSV export honours the same filter
+    csv_default = client.get(url + "/export").text
+    assert "coreutils" not in csv_default
+    csv_extra = client.get(url + "/export?extra=1").text
+    assert "coreutils" in csv_extra
+    # history chips: no "--" pill for repository-side comparisons
+    index = client.get("/compare")
+    assert '<span class="pill pill-bad">' not in index.text
+
+
+def test_modal_css_hides_popup_by_default(web):
+    client, _ = web
+    css = client.get("/static/style.css")
+    assert css.status_code == 200
+    # without this rule the author `display:flex` beats the UA [hidden] style
+    # and the popup covers the report from the first render
+    assert ".modal-backdrop[hidden]" in css.text
+
+
+def test_compare_selects_disabled_while_syncing(web):
+    client, _ = web
+    _create_product(client)
+    client.post("/lists/branch", data={"branch": "p11"}, follow_redirects=False)
+    client.post("/lists/branch", data={"branch": "p11"}, follow_redirects=False)
+    assert client.get("/compare").status_code == 200
+
+    app = client.app
+    app.state.jobs["sync:1"] = {
+        "running": True, "stage": "x", "error": None, "last": None, "finished_at": None,
+    }
+    try:
+        page = client.get("/compare")
+        assert "Идёт синхронизация" in page.text
+        assert '<select name="left" required disabled>' in page.text
+        assert '<select name="right" required disabled>' in page.text
+        assert 'type="submit" disabled>Сравнить' in page.text
+    finally:
+        app.state.jobs.pop("sync:1", None)
+
+    # sync over: the form is usable again
+    page = client.get("/compare")
+    assert "Идёт синхронизация" not in page.text
+    assert '<select name="left" required >' in page.text
+    assert '<select name="left" required disabled>' not in page.text
 
 
 def test_preset_requires_product(web):
@@ -376,6 +473,72 @@ def test_images_arch_filter_uses_reference_list(web):
     # the arch dropdown is the rdb reference list, not the 5 catalog values
     assert ">riscv64</option>" in page.text and ">armv6</option>" in page.text
     assert ">все</option>" in page.text  # «все» keeps working
+
+
+# ---------------------------------------------------------------------------
+# image lists from the Lists section
+# ---------------------------------------------------------------------------
+def test_lists_page_offers_image_selector(web, conn):
+    client, _ = web
+    page = client.get("/lists")
+    assert page.status_code == 200
+    # catalog is loaded on first visit (same as /images)
+    assert conn.execute("SELECT COUNT(*) FROM image_catalog").fetchone()[0] >= 1
+    assert 'action="/lists/image"' in page.text
+    assert '<optgroup label="Каталог образов">' in page.text
+    assert f'value="{UUID}"' in page.text
+    assert "Сохранить список образа" in page.text
+
+
+def test_lists_page_groups_bound_product_images(web, conn):
+    client, _ = web
+    _create_product(client)
+    client.post(
+        "/products/1/track", data={"uuid": UUID}, follow_redirects=False
+    )
+    _wait_job(client, "track:")
+
+    page = client.get("/lists")
+    assert '<optgroup label="Продукт: Образование 11">' in page.text
+    # the bound image lives in the product group only — no duplicate option
+    assert page.text.count(f'value="{UUID}"') == 1
+
+
+def test_lists_image_flow_makes_comparable_lists(web, conn):
+    client, _ = web
+    # two saves of the same image stand in for two releases (11.0 / 11.1)
+    resp = client.post(
+        "/lists/image",
+        data={"uuid": UUID, "title": "alt-server 11.0"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303 and "created=1" in resp.headers["location"]
+    resp = client.post(
+        "/lists/image",
+        data={"uuid": UUID, "title": "alt-server 11.1"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    rows = lists_mod.list_lists(conn)
+    assert [r.title for r in rows] == ["alt-server 11.0", "alt-server 11.1"]
+    assert all(r.kind == "image" for r in rows)
+    # both lists are selectable on the compare page
+    page = client.get("/compare")
+    for r in rows:
+        assert r.title in page.text
+
+
+def test_product_bound_images_have_list_button(web, conn):
+    client, _ = web
+    _create_product(client)
+    client.post(
+        "/products/1/track", data={"uuid": UUID}, follow_redirects=False
+    )
+    _wait_job(client, "track:")
+    page = client.get("/products/1")
+    assert "Привязанные образы" in page.text
+    assert 'action="/lists/image"' in page.text
+    assert f'value="{UUID}"' in page.text
 
 
 def test_lists_form_shows_arch_checkboxes(web):

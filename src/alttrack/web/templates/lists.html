@@ -53,6 +53,40 @@
       <a class="btn" href="/compare">Перейти к сравнению →</a>
     </div>
   </div>
+
+  <div class="card">
+    <h2>Состав образа</h2>
+    {% if bound_images or catalog_images %}
+    <form method="post" action="/lists/image" class="stack">
+      <label>Образ</label>
+      <select name="uuid" required>
+        {% if bound_images %}
+        <optgroup label="Продукт: {{ product.title }}">
+          {% for img in bound_images %}
+          <option value="{{ img.uuid }}">{{ img.file or img.tag or img.uuid[:8] }} · {{ img.branch }}/{{ img.edition or '—' }} {{ img.arch }}{% if img.date %} · {{ img.date[:10] }}{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+        {% if catalog_images %}
+        <optgroup label="Каталог образов">
+          {% for img in catalog_images %}
+          <option value="{{ img.uuid }}">{{ img.file or img.tag or img.uuid[:8] }} · {{ img.branch }}/{{ img.edition or '—' }} {{ img.arch }}{% if img.date %} · {{ img.date[:10] }}{% endif %}</option>
+          {% endfor %}
+        </optgroup>
+        {% endif %}
+      </select>
+      <label>Название</label>
+      <input type="text" name="title" placeholder="по умолчанию — имя файла образа">
+      <button class="btn btn-secondary" type="submit">Сохранить список образа</button>
+      <p class="hint">Полный состав образа с маппингом бинарников в srpm — сохраните два образа
+        (например, 11.0 и 11.1) и сравните их ниже.
+        {% if not product %}Привязанные образы продукта появятся, когда выбран продукт в шапке.{% endif %}</p>
+    </form>
+    {% else %}
+    <p class="hint">Каталог образов пуст — откройте <a href="/images">раздел «Образы»</a>,
+      он подгрузится автоматически.</p>
+    {% endif %}
+  </div>
 </div>
 
 <div class="card">

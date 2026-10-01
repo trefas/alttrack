@@ -245,6 +245,7 @@ CREATE TABLE IF NOT EXISTS comparisons (
 
 CREATE INDEX IF NOT EXISTS idx_product_packages_pkg ON product_packages (package_id);
 CREATE INDEX IF NOT EXISTS idx_product_images_prod ON product_images (product_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_product_images_uniq ON product_images (product_id, image_uuid);
 CREATE INDEX IF NOT EXISTS idx_image_catalog_sel ON image_catalog (branch, edition, arch);
 CREATE INDEX IF NOT EXISTS idx_package_meta_branch ON package_meta (branch, kind);
 CREATE INDEX IF NOT EXISTS idx_list_items_name ON list_items (name);
@@ -281,6 +282,16 @@ def connect(db_path: Path | str, *, readonly: bool = False) -> sqlite3.Connectio
 def init_db(conn: sqlite3.Connection) -> None:
     """Create the schema if missing and apply pending migrations."""
     with conn:
+        # Older databases could double-bind the same image to a product
+        # (track + update both inserted a row): keep the earliest binding
+        # before the unique index in SCHEMA must be created.
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='product_images'"
+        ).fetchone():
+            conn.execute(
+                "DELETE FROM product_images WHERE id NOT IN "
+                "(SELECT MIN(id) FROM product_images GROUP BY product_id, image_uuid)"
+            )
         conn.executescript(SCHEMA)
         row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
         if row is None:
