@@ -1,10 +1,13 @@
-"""Reference lists from rdb.altlinux.org: architectures and software groups.
+"""Reference lists from rdb.altlinux.org: branches, architectures, groups.
 
-Both lists change rarely (new architecture, new group), so they are read from
-the API at first database fill (first refresh pass), stored locally and can be
-re-synced manually from the Settings section (web) or ``alttrack meta refs``
-(CLI).
+All lists change rarely (a branch appears, an architecture, a group), so they
+are read from the API at first database fill (first refresh pass), stored
+locally and can be re-synced manually from the Settings section (web) or
+``alttrack meta refs`` (CLI).
 
+* branch    — ``/packageset/active_packagesets`` (published packagesets);
+              feeds the branch selectors on Products, Images and Lists —
+              previously they were hardcoded or free-text fields;
 * arch      — ``/site/all_pkgset_archs`` for every active branch, unioned with
               the built-in parser defaults and the architectures seen in the
               image catalog;
@@ -14,6 +17,7 @@ re-synced manually from the Settings section (web) or ``alttrack meta refs``
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from typing import Any
 
@@ -21,12 +25,17 @@ from . import rpmparse
 from .api import ALTRepoClient, ApiError
 from .journal import utcnow
 
+KIND_BRANCH = "branch"
 KIND_ARCH = "arch"
 KIND_CATEGORY = "category"
-KINDS = (KIND_ARCH, KIND_CATEGORY)
+KINDS = (KIND_BRANCH, KIND_ARCH, KIND_CATEGORY)
 
 # Most common architectures first (display order for selectors/checkboxes).
 COMMON_ARCHS = ("x86_64", "aarch64", "i586", "armh", "ppc64le")
+
+# The branches most products are built from come first in selectors; the rest
+# of the stored list follows alphabetically.
+COMMON_BRANCHES = ("sisyphus", "p11", "p10", "p9", "p8")
 
 # Pseudo-architectures: not installable architectures of a repository branch.
 _PSEUDO_ARCHS = frozenset({"src", "srpm", "noarch"})
@@ -87,17 +96,24 @@ def sync(
 
     now = utcnow()
     with conn:
+        # A failed active_packagesets call must not wipe an existing branch
+        # list — only the kinds we actually fetched are replaced.
+        kinds = [KIND_ARCH, KIND_CATEGORY]
+        if branches:
+            kinds.append(KIND_BRANCH)
         conn.execute(
-            "DELETE FROM reference_lists WHERE kind IN (?, ?)",
-            (KIND_ARCH, KIND_CATEGORY),
+            f"DELETE FROM reference_lists WHERE kind IN ({', '.join('?' * len(kinds))})",
+            tuple(kinds),
         )
         conn.executemany(
             "INSERT INTO reference_lists (kind, value, count, synced_at) "
             "VALUES (?, ?, ?, ?)",
             [(KIND_ARCH, a, 0, now) for a in sorted(arches)]
-            + [(KIND_CATEGORY, c, categories[c], now) for c in sorted(categories)],
+            + [(KIND_CATEGORY, c, categories[c], now) for c in sorted(categories)]
+            + [(KIND_BRANCH, b, 0, now) for b in branches],
         )
     return {
+        "branch": len(branches),
         "arch": len(arches),
         "category": len(categories),
         "synced_at": now,
@@ -106,9 +122,13 @@ def sync(
 
 
 def ensure(conn: sqlite3.Connection, client: ALTRepoClient) -> dict[str, Any] | None:
-    """Sync only when nothing is stored yet (first database fill)."""
-    stored = conn.execute("SELECT COUNT(*) FROM reference_lists").fetchone()[0]
-    if stored:
+    """Sync when any kind is missing (first fill, or an upgrade that adds
+    the branch reference to a database created by an older version)."""
+    stored = {
+        str(r[0])
+        for r in conn.execute("SELECT DISTINCT kind FROM reference_lists")
+    }
+    if set(KINDS) <= stored:
         return None
     try:
         return sync(conn, client)
@@ -138,6 +158,35 @@ def branch_arch_options(conn: sqlite3.Connection) -> list[str]:
     values = [a for a in architectures(conn) if a.lower() not in _PSEUDO_ARCHS]
     common = [a for a in COMMON_ARCHS if a in values]
     return common + sorted(a for a in values if a not in common)
+
+
+def branches(conn: sqlite3.Connection) -> list[str]:
+    """Stored branch list; falls back to the active-branches cache written by
+    every refresh pass (older databases get the reference on their next
+    ``ensure``/manual sync)."""
+    rows = conn.execute(
+        "SELECT value FROM reference_lists WHERE kind = ? ORDER BY value",
+        (KIND_BRANCH,),
+    ).fetchall()
+    if rows:
+        return [str(r[0]) for r in rows]
+    row = conn.execute("SELECT value FROM meta WHERE key='active_branches'").fetchone()
+    if row:
+        try:
+            cached = json.loads(row[0])
+            if isinstance(cached, list) and cached:
+                return sorted(str(b) for b in cached)
+        except (TypeError, ValueError):
+            pass
+    return []
+
+
+def branch_options(conn: sqlite3.Connection) -> list[str]:
+    """Branch selector order: the usual product branches first, then the rest
+    of the stored reference list alphabetically."""
+    values = branches(conn)
+    common = [b for b in COMMON_BRANCHES if b in values]
+    return common + sorted(b for b in values if b not in common)
 
 
 def categories(conn: sqlite3.Connection) -> list[dict[str, Any]]:

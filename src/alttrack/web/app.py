@@ -20,7 +20,6 @@ from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, Uploa
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from anyio import to_thread
 from urllib.parse import urlencode
 
 from .. import archive, compare, images, journal, lists, metasync, products, refs, refresh, tasks, watchlist
@@ -259,6 +258,12 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             **extra,
         }
 
+    def _syncing() -> bool:
+        """True while a refresh pass or any background job is running."""
+        if app.state.refresh_status["running"]:
+            return True
+        return any(j.get("running") for j in app.state.jobs.values())
+
     # ------------------------------------------------------------------
     # background refresh loop
     # ------------------------------------------------------------------
@@ -272,23 +277,37 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             await trigger_refresh()
 
     async def trigger_refresh() -> None:
-        if app.state.refresh_status["running"]:
+        status = app.state.refresh_status
+        if status["running"]:
             return
+        # Фоном, а не «дожидаясь» запроса: проход по всем пакетам занимает
+        # минуты, и POST /refresh вместе с кнопкой «Обновить сейчас» раньше
+        # висел на всё это время. Флаг ставим сразу — он закрывает гонку
+        # двойного запуска, пока поток не стартовал.
+        status["running"] = True
 
         def _run() -> None:
-            conn = open_db(cfg.db_path)
-            client = ALTRepoClient(
-                cfg.api_base_url, timeout=cfg.http_timeout, concurrency=cfg.http_concurrency
-            )
+            conn = None
+            client = getattr(app.state, "shared_client", None)
+            owned = client is None
             try:
+                conn = open_db(cfg.db_path)
+                if owned:
+                    client = ALTRepoClient(
+                        cfg.api_base_url, timeout=cfg.http_timeout,
+                        concurrency=cfg.http_concurrency,
+                    )
                 do_refresh(conn, client)
             except Exception:  # noqa: BLE001
                 log.exception("background refresh failed")
+                status["running"] = False
             finally:
-                client.close()
-                conn.close()
+                if owned and client is not None:
+                    client.close()
+                if conn is not None:
+                    conn.close()
 
-        await to_thread.run_sync(_run)
+        threading.Thread(target=_run, daemon=True, name="refresh").start()
 
     # ------------------------------------------------------------------
     # dashboard
@@ -416,6 +435,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         active_branches = _active_branches(conn)
         events, total = journal.query_events(conn, package=pkg.name, scope="all", limit=30)
         pkg_tasks, tasks_total = tasks.list_tasks(conn, package=pkg.name, limit=15)
+        erratas = journal.erratas_for_package(conn, pkg.id)
         present_report = None
         backfill_job = app.state.jobs.get(f"backfill:{pkg.id}")
         return templates.TemplateResponse(
@@ -430,6 +450,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 total=total,
                 pkg_tasks=pkg_tasks,
                 tasks_total=tasks_total,
+                erratas=erratas,
                 present_report=present_report,
                 backfill_limit=cfg.backfill_limit,
                 backfill_job=backfill_job,
@@ -445,17 +466,31 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         pkg = watchlist.get_package(conn, package_id)
         if pkg is None:
             raise HTTPException(404, "пакет не найден")
-        try:
-            report = watchlist.check_branches(client, pkg.name, pkg.branches)
-        except ApiError as exc:
-            report = {"warnings": [f"не удалось проверить ветки: {exc}"],
-                      "ok": [], "missing": [], "inactive": [],
-                      "active_branches": [], "present_branches": [],
-                      "requested": pkg.branches}
+        report: dict[str, Any] | None = None
+        if _syncing():
+            # Во время синхронизации страница не должна ходить в rdb: живые
+            # запросы здесь зависают на ретраях, а автоперезагрузка обрывает
+            # ответ — пользователь видит «перезагрузку без изменений».
+            report = watchlist.local_branch_report(conn, pkg)
+            if report is not None:
+                report["warnings"].insert(
+                    0,
+                    "идёт синхронизация — ветки показаны по локальным данным, без "
+                    "запросов к rdb; нажмите «Проверить наличие» после завершения",
+                )
+        if report is None:
+            try:
+                report = watchlist.check_branches(client, pkg.name, pkg.branches)
+            except ApiError as exc:
+                report = {"warnings": [f"не удалось проверить ветки: {exc}"],
+                          "ok": [], "missing": [], "inactive": [],
+                          "active_branches": [], "present_branches": [],
+                          "requested": pkg.branches}
         return templates.TemplateResponse(
             request,
             "package_form.html",
-            ctx(request, mode="edit", pkg=pkg, report=report, error=None, name=pkg.name),
+            ctx(request, mode="edit", pkg=pkg, report=report,
+                grid=_branch_grid(pkg, report), error=None, name=pkg.name),
         )
 
     @app.post("/packages/{package_id}")
@@ -491,7 +526,8 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             return templates.TemplateResponse(
                 request,
                 "package_form.html",
-                ctx(request, mode="edit", pkg=pkg, report=None, error=str(exc), name=pkg.name),
+                ctx(request, mode="edit", pkg=pkg, report=None,
+                    grid=_branch_grid(pkg, None), error=str(exc), name=pkg.name),
                 status_code=400,
             )
         return RedirectResponse(f"/packages/{updated.id}?saved=1", status_code=303)
@@ -731,6 +767,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 request,
                 cards=cards,
                 arch_list=refs.branch_arch_options(conn),
+                branch_list=refs.branch_options(conn),
                 error=request.query_params.get("error"),
             ),
         )
@@ -979,6 +1016,12 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         # Architectures come from the rdb reference list (Settings → Справочники):
         # the catalog alone only shows arches of images that already exist.
         opts["archs"] = refs.branch_arch_options(conn)
+        # Branches likewise: the reference keeps the selector usable before
+        # any image of a new branch has appeared in the catalog.
+        ref_branches = refs.branch_options(conn)
+        opts["branches"] = ref_branches + sorted(
+            b for b in (opts.get("branches") or []) if b not in ref_branches
+        )
         return templates.TemplateResponse(
             request,
             "images.html",
@@ -1049,7 +1092,8 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 request,
                 rows=lists.list_lists(conn),
                 product=product,
-                arch_opts=refs.branch_arch_options(conn),
+                arch_opts=["noarch"] + refs.branch_arch_options(conn),
+                branch_opts=_list_branch_opts(conn, product),
                 bound_images=bound,
                 catalog_images=others,
                 created=int(created) if created and created.isdigit() else None,
@@ -1418,13 +1462,14 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         conn=Depends(get_conn),
         client=Depends(client_for_request),
     ) -> Any:
-        # First visit fills the reference lists (architectures, groups) once.
+        # Первый визит и базы старых версий дозаполняют справочники (включая
+        # список веток): ensure сам проверяет нехватку видов и без надобности
+        # в API не ходит.
         refs_error = None
-        if not conn.execute("SELECT 1 FROM reference_lists LIMIT 1").fetchone():
-            try:
-                refs.ensure(conn, client)
-            except ApiError as exc:
-                refs_error = str(exc)
+        try:
+            refs.ensure(conn, client)
+        except ApiError as exc:
+            refs_error = str(exc)
         return templates.TemplateResponse(
             request,
             "settings.html",
@@ -1433,6 +1478,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 saved=request.query_params.get("saved"),
                 refs=refs.status(conn),
                 arch_list=refs.architectures(conn),
+                branch_list=refs.branches(conn),
                 category_list=refs.categories(conn),
                 refs_saved=bool(request.query_params.get("refs")),
                 refs_error=refs_error or request.query_params.get("refs_error"),
@@ -1517,11 +1563,25 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         return JSONResponse(report)
 
     @app.get("/api/branches")
-    def branches(client=Depends(client_for_request)) -> Any:
+    def branches(conn=Depends(get_conn), client=Depends(client_for_request)) -> Any:
+        # Кэш важнее свежести: живой запрос во время синхронизации зависает на
+        # ретраях и роняет блок веток в форме пакета (страница обновляется
+        # каждые 5 секунд и не дожидается ответа). Кэш пишет каждое освежение.
+        cached = _active_branches(conn)
+        if cached:
+            return JSONResponse(cached)
         try:
-            return JSONResponse(client.active_packagesets())
+            active = client.active_packagesets()
         except ApiError as exc:
             return JSONResponse({"error": str(exc)}, status_code=502)
+        active = sorted(active)
+        with conn:
+            conn.execute(
+                "INSERT INTO meta (key, value) VALUES ('active_branches', ?) "
+                "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                (json.dumps(active),),
+            )
+        return JSONResponse(active)
 
     @app.get("/healthz")
     def healthz() -> Any:
@@ -1539,3 +1599,36 @@ def _active_branches(conn: Any) -> list[str]:
         except (TypeError, ValueError):
             return []
     return []
+
+
+def _list_branch_opts(conn: Any, product: Any) -> list[str]:
+    """Branch reference for the two selects on the Lists page; the selected
+    product's branch is always offered even when it is not published anymore."""
+    opts = refs.branch_options(conn)
+    if product is not None and product.branch and product.branch not in opts:
+        opts = [product.branch] + opts
+    return opts
+
+
+def _branch_grid(pkg: Any, report: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Server-side data for the branch checkbox grid on the package form.
+
+    The grid used to be built only by JavaScript from a live ``/api/branches``
+    call — during a sync that call outlived the 5-second auto-reload and the
+    block «disappeared». Rendering it on the server makes it survive reloads,
+    work offline and show presence states from the (fresh) report.
+    """
+    report = report or {}
+    active = report.get("active_branches") or []
+    names = list(dict.fromkeys([*active, *pkg.branches]))
+    states: dict[str, str] = {}
+    for b in report.get("ok", []):
+        states[b] = "есть"
+    for b in report.get("missing", []):
+        states[b] = "нет в ветке"
+    for b in report.get("inactive", []):
+        states[b] = "ветка неактивна"
+    return [
+        {"name": b, "checked": b in pkg.branches, "state": states.get(b, "не проверено")}
+        for b in names
+    ]

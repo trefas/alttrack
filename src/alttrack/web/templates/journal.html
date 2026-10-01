@@ -26,7 +26,7 @@
     <select name="event_type">
       <option value="">все</option>
       {% for t in event_types %}
-      <option value="{{ t }}" {{ 'selected' if t in filters.event_type }}>{{ t }}</option>
+      <option value="{{ t }}" {{ 'selected' if t in filters.event_type }}>{{ t | label }}</option>
       {% endfor %}
     </select>
   </div>

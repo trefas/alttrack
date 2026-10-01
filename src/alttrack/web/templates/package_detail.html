@@ -10,6 +10,11 @@
 {% if created %}<div class="success">Пакет добавлен: baseline сохранён, история сборок импортирована.</div>{% endif %}
 {% if saved %}<div class="success">Изменения сохранены.</div>{% endif %}
 {% if busy %}<div class="warning">Задача уже выполняется — дождитесь её завершения.</div>{% endif %}
+{% set syncing = refresh_running or job_running %}
+{% if syncing %}
+<div class="warning"><strong>Идёт синхронизация с репозиториями</strong> — изменение пакета
+  временно недоступно, страница может обновиться автоматически: дождитесь завершения.</div>
+{% endif %}
 {% if backfill_job and not backfill_job.running %}
   {% if backfill_job.error %}
   <div class="error">Импорт истории не удался: {{ backfill_job.error }}</div>
@@ -20,11 +25,20 @@
 {% endif %}
 
 <div class="inline-form" style="margin-bottom:16px">
+  {% if syncing %}
+  <span class="btn btn-secondary disabled"
+        title="Идёт синхронизация — дождитесь завершения">Изменить</span>
+  {% else %}
   <a class="btn btn-secondary" href="/packages/{{ pkg.id }}/edit">Изменить</a>
+  {% endif %}
   <a class="btn btn-secondary" href="/journal?package={{ pkg.name }}">События в журнале</a>
+  <a class="btn btn-secondary" href="/journal?package={{ pkg.name }}&event_type=errata"
+     title="События errata / уязвимости (CVE) этого пакета в журнале">Errata / CVE</a>
+  <a class="btn btn-secondary" href="/journal?package={{ pkg.name }}&event_type=maintainer_changed"
+     title="Смены сопровождающего (packager / ACL) в журнале">Смена сопровождающего</a>
   <a class="btn btn-secondary" href="/tasks?package={{ pkg.name }}">Сборочные задания</a>
   <form method="post" action="/packages/{{ pkg.id }}/backfill">
-    <button class="btn btn-secondary btn-small" type="submit"
+    <button class="btn btn-secondary btn-small" type="submit" {{ 'disabled' if syncing }}
             onclick="return confirm('Импортировать историю сборок (до {{ backfill_limit }} на ветку)?');">
       Импортировать историю сборок
     </button>
@@ -34,7 +48,7 @@
     <label class="checkbox-line" style="margin:0">
       <input type="checkbox" name="purge" value="1"> удалить и журнал
     </label>
-    <button class="btn btn-danger btn-small" type="submit">Убрать из отслеживания</button>
+    <button class="btn btn-danger btn-small" type="submit" {{ 'disabled' if syncing }}>Убрать из отслеживания</button>
   </form>
 </div>
 
@@ -62,6 +76,36 @@
     {% endfor %}
   </table>
   <p class="small muted">Добавлено: {{ pkg.added_at | dt }} · последняя проверка: {{ pkg.last_checked_at | dt }}</p>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Errata и уязвимости <span class="muted small">({{ erratas | length }})</span></h2>
+  {% if not pkg.watch_errata %}
+  <p class="muted small">Отслеживание errata для этого пакета отключено —
+    <a href="/packages/{{ pkg.id }}/edit">включить</a>.</p>
+  {% elif erratas %}
+  <table class="compact">
+    <tr><th>Errata</th><th>Ветка</th><th>Тип</th><th>Версия</th><th>CVE / ссылки</th><th>Обнаружена</th></tr>
+    {% for e in erratas %}
+    <tr>
+      <td class="mono small">{{ e.errata_id }}</td>
+      <td>{{ e.branch or '—' }}</td>
+      <td>{{ e.type or '—' }}</td>
+      <td class="mono small">{{ e.version or '—' }}</td>
+      <td class="small mono">
+        {% if e.refs %}{{ e.refs[:8] | join(', ') }}{% if e.refs | length > 8 %}
+        <span class="muted">… ещё {{ e.refs | length - 8 }}</span>{% endif %}{% else %}—{% endif %}
+      </td>
+      <td class="mono small">{{ e.first_seen | dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="small muted">Каждая errata попадает сюда один раз — при первом обнаружении
+    освежением. История и поиск по CVE — в
+    <a href="/journal?package={{ pkg.name }}&event_type=errata">журнале</a>.</p>
+  {% else %}
+  <p class="muted small">Errata не обнаружено — проверяется при каждом освежении.</p>
+  {% endif %}
 </div>
 
 <div class="grid cols-2" style="margin-top:16px">

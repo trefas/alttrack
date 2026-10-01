@@ -43,6 +43,8 @@
       <div class="inline-form">
         <button class="btn" type="submit">Сохранить</button>
         <a class="btn btn-secondary" href="/archive">Перейти к архивации</a>
+        <a class="btn btn-secondary" href="/stats">Статистика</a>
+        <a class="btn btn-secondary" href="/runs">Прогоны</a>
       </div>
     </form>
   </div>
@@ -57,11 +59,15 @@
     <form method="post" action="/settings/refs/sync">
       <button class="btn btn-secondary" type="submit">Обновить справочники</button>
     </form>
-    <span class="hint" style="margin-left:10px">Списки архитектур и групп ПО читаются из API
+    <span class="hint" style="margin-left:10px">Списки веток, архитектур и групп ПО читаются из API
       при первом заполнении базы и обновляются вручную — меняются крайне редко.</span>
   </div>
 
   <table class="compact">
+    <tr>
+      <td style="width:220px"><strong>Ветки</strong> <span class="muted">({{ branch_list | length }})</span></td>
+      <td>{% for b in branch_list %}<span class="tag">{{ b }}</span> {% endfor %}</td>
+    </tr>
     <tr>
       <td style="width:220px"><strong>Архитектуры</strong> <span class="muted">({{ arch_list | length }})</span></td>
       <td>{% for a in arch_list %}<span class="tag">{{ a }}</span> {% endfor %}</td>
@@ -77,8 +83,8 @@
 
   {% if refs %}
   <p class="hint">
-    {% for r in refs %}{{ r.kind }}: строк {{ r.count }}, обновлено {{ r.synced_at | dt }}{% if not loop.last %} · {% endif %}{% endfor %}
-    · источники: <code>/site/all_pkgset_archs</code>, <code>/site/pkgset_categories_count</code>
+    {% for r in refs %}{{ {'branch': 'ветки', 'arch': 'архитектуры', 'category': 'группы ПО'}.get(r.kind, r.kind) }}: строк {{ r.count }}, обновлено {{ r.synced_at | dt }}{% if not loop.last %} · {% endif %}{% endfor %}
+    · источники: <code>/packageset/active_packagesets</code>, <code>/site/all_pkgset_archs</code>, <code>/site/pkgset_categories_count</code>
   </p>
   {% else %}
   <p class="hint">Справочники ещё не загружены — заполняются при первом освежении или по кнопке выше.

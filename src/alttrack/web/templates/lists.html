@@ -3,13 +3,18 @@
 {% block content %}
 <h1>Списки пакетов <span class="muted small">({{ rows | length }})</span></h1>
 
+{% set syncing = refresh_running or job_running %}
+{% if syncing %}
+<div class="warning"><strong>Идёт синхронизация с репозиториями</strong> — сохранение списков
+  временно недоступно (экспорт веток и образов ходит в rdb): дождитесь завершения.</div>
+{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if created %}<div class="success">Список #{{ created }} сохранён. <a href="/compare?left={{ created }}">Сравнить →</a></div>{% endif %}
 
 <div class="grid cols-2">
   <div class="card">
     <h2>Загрузить список rpm</h2>
-    <form method="post" action="/lists/file" id="upload-form">
+    <form method="post" action="/lists/file" id="upload-form" enctype="multipart/form-data">
       <div class="dropzone" id="dropzone">
         <p><strong>Перетащите файл сюда</strong> или
           <label class="linklike"><input type="file" name="file" id="file-input" accept=".txt,.list,.lst,.log,.md" style="display:none">выберите файл</label></p>
@@ -21,11 +26,13 @@
       <label>Название</label>
       <input type="text" name="title" placeholder="по умолчанию — имя файла">
       <label>Ветка для маппинга бинарников в srpm</label>
-      <input type="text" name="branch" value="{{ product.branch if product else '' }}"
-             placeholder="p11, sisyphus…">
+      <select name="branch">
+        <option value="">— не нужен (список уже в srpm) —</option>
+        {% for b in branch_opts %}<option value="{{ b }}" {{ 'selected' if product and b == product.branch }}>{{ b }}</option>{% endfor %}
+      </select>
       <input type="hidden" name="product_id" value="{{ product.id if product else '' }}">
       <p class="hint">Если строки — уже srpm (обычно так), ветку можно оставить пустой.</p>
-      <button class="btn" type="submit">Сохранить список</button>
+      <button class="btn" type="submit" {{ 'disabled' if syncing }}>Сохранить список</button>
     </form>
   </div>
 
@@ -33,18 +40,22 @@
     <h2>Снять состояние репозитория</h2>
     <form method="post" action="/lists/branch" class="stack">
       <label>Ветка</label>
-      <input type="text" name="branch" value="{{ product.branch if product else 'p11' }}" required>
+      <select name="branch" required>
+        {% for b in branch_opts %}<option value="{{ b }}" {{ 'selected' if b == (product.branch if product else 'p11') }}>{{ b }}</option>{% endfor %}
+      </select>
       <label>Архитектуры</label>
       <div class="checkrow">
         {% for a in arch_opts %}
-        <label class="checkitem"><input type="checkbox" name="arch" value="{{ a }}"> {{ a }}</label>
+        <label class="checkitem"><input type="checkbox" name="arch" value="{{ a }}"{{ ' checked' if a == 'noarch' }}> {{ a }}</label>
         {% endfor %}
       </div>
-      <p class="hint">Ничего не отмечено — все архитектуры ветки. Список — из справочника rdb
-        (<a href="/settings">Настройки → Справочники</a>).</p>
+      <p class="hint">Ничего не отмечено — все архитектуры ветки. <strong>noarch</strong> отмечен
+        по умолчанию: это пакеты без привязки к архитектуре, они есть в каждой архитектуре
+        репозитория — без них срез их теряет и сравнение показывает ложные отсутствия.
+        Список — из справочника rdb (<a href="/settings">Настройки → Справочники</a>).</p>
       <label>Название</label>
       <input type="text" name="title" placeholder="p11 x86_64 (репозиторий)">
-      <button class="btn btn-secondary" type="submit">Снять список ветки</button>
+      <button class="btn btn-secondary" type="submit" {{ 'disabled' if syncing }}>Снять список ветки</button>
       <p class="hint">Один запрос к export/branch_binary_packages — все бинарные пакеты ветки
         с указанием исходного пакета. Идеально как «правая сторона» сравнения.</p>
     </form>
@@ -77,7 +88,7 @@
       </select>
       <label>Название</label>
       <input type="text" name="title" placeholder="по умолчанию — имя файла образа">
-      <button class="btn btn-secondary" type="submit">Сохранить список образа</button>
+      <button class="btn btn-secondary" type="submit" {{ 'disabled' if syncing }}>Сохранить список образа</button>
       <p class="hint">Полный состав образа с маппингом бинарников в srpm — сохраните два образа
         (например, 11.0 и 11.1) и сравните их ниже.
         {% if not product %}Привязанные образы продукта появятся, когда выбран продукт в шапке.{% endif %}</p>

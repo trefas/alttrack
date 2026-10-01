@@ -35,16 +35,21 @@
 
   <div class="card">
     <h2>Пресеты для продукта</h2>
+    {% set syncing = refresh_running or job_running %}
+    {% if syncing %}
+    <div class="warning">Идёт синхронизация — пресеты временно недоступны
+      (они выгружают данные из rdb): дождитесь завершения.</div>
+    {% endif %}
     {% if product %}
     <p class="small muted">Продукт: <strong>{{ product.title }}</strong> ({{ product.branch }} · {{ product.edition or '—' }} · {{ product.arch }})</p>
     <form method="post" action="/compare/preset">
       <input type="hidden" name="preset" value="release-branch">
-      <button class="btn btn-secondary" type="submit">Образ ↔ репозиторий {{ product.branch }}</button>
+      <button class="btn btn-secondary" type="submit" {{ 'disabled' if syncing }}>Образ ↔ репозиторий {{ product.branch }}</button>
       <p class="hint">Последний release-образ продукта против текущего состояния ветки.</p>
     </form>
     <form method="post" action="/compare/preset">
       <input type="hidden" name="preset" value="release-list">
-      <button class="btn btn-secondary" type="submit">Последний образ ↔ загруженный список</button>
+      <button class="btn btn-secondary" type="submit" {{ 'disabled' if syncing }}>Последний образ ↔ загруженный список</button>
       <p class="hint">«Сравнить с прошлым релизом»: образ против списка, загруженного из файла.</p>
     </form>
     {% else %}

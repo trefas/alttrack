@@ -111,16 +111,65 @@ def check_branches(
         "inactive": [b for b in branches if b not in active],
         "warnings": [],
     }
+    report["warnings"] = _report_warnings(name, report)
+    return report
+
+
+def _report_warnings(name: str, report: dict[str, Any]) -> list[str]:
+    warnings = []
     for branch in report["missing"]:
-        report["warnings"].append(
+        warnings.append(
             f"в ветке {branch} пакета {name} сейчас нет — отслеживание разрешено, "
             f"событие появления будет записано автоматически"
         )
     for branch in report["inactive"]:
-        report["warnings"].append(
+        warnings.append(
             f"ветка {branch} не входит в опубликованные пакетные наборы — "
             f"отслеживать её бессмысленно"
         )
+    return warnings
+
+
+def local_branch_report(
+    conn: sqlite3.Connection, package: TrackedPackage
+) -> dict[str, Any] | None:
+    """The same report as :func:`check_branches` without a single API call.
+
+    Built from the cached active-packageset list (every refresh pass writes it
+    to ``meta``) and the ``present`` flags in the snapshots table — used while
+    a sync is running, when live rdb requests would stall on retries and the
+    page may be reloaded by the status auto-refresh at any moment.
+
+    Returns ``None`` when the cache is still empty (no refresh has completed
+    yet), so the caller can fall back to a live check.
+    """
+    row = conn.execute("SELECT value FROM meta WHERE key='active_branches'").fetchone()
+    if not row:
+        return None
+    try:
+        active = json.loads(row["value"])
+    except (TypeError, ValueError):
+        return None
+    if not active:
+        return None
+    present = {
+        r["branch"]
+        for r in conn.execute(
+            "SELECT branch FROM snapshots WHERE package_id = ? AND present = 1",
+            (package.id,),
+        )
+    }
+    branches = list(package.branches)
+    report = {
+        "active_branches": active,
+        "present_branches": sorted(present),
+        "requested": branches,
+        "ok": [b for b in branches if b in present and b in active],
+        "missing": [b for b in branches if b not in present and b in active],
+        "inactive": [b for b in branches if b not in active],
+        "warnings": [],
+    }
+    report["warnings"] = _report_warnings(package.name, report)
     return report
 
 

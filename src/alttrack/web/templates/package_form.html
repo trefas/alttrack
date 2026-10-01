@@ -3,6 +3,12 @@
 {% block content %}
 <h1>{{ 'Добавление пакета' if mode == 'new' else 'Редактирование: ' + pkg.name }}</h1>
 
+{% set syncing = refresh_running or job_running %}
+{% if syncing %}
+<div class="warning"><strong>Идёт синхронизация с репозиториями</strong> — страница может
+  обновиться автоматически, а сохранение изменений временно отключено:
+  дождитесь завершения.</div>
+{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if report and report.warnings %}
   {% for w in report.warnings %}<div class="warning">{{ w }}</div>{% endfor %}
@@ -32,15 +38,29 @@
     <div class="hint">Наличие пакета в ветке проверяется по API. Отсутствие — предупреждение, но выбрать можно: событие о появлении будет записано автоматически.</div>
 
     <div class="inline-form" style="margin-top:10px">
-      <button type="button" class="btn btn-secondary btn-small" onclick="loadBranches(true)">Загрузить список веток</button>
+      <button type="button" class="btn btn-secondary btn-small" onclick="reloadBranchList()">Загрузить список веток</button>
       <button type="button" class="btn btn-secondary btn-small" onclick="checkPresence()">Проверить наличие</button>
       <button type="button" class="btn btn-secondary btn-small" onclick="selectPresent()">Выбрать только присутствующие</button>
       <button type="button" class="btn btn-secondary btn-small" onclick="selectAll()">Выбрать все</button>
     </div>
 
     <div id="branch-warnings"></div>
+    {# Сетка рисуется на сервере: она переживает автоперезагрузку страницы и не
+       зависит от /api/branches, который во время синхронизации отвечает долго. #}
     <div class="branch-grid" id="branch-grid">
-      <div class="hint">Нажмите «Загрузить список веток».</div>
+      {% if grid %}
+        {% for item in grid %}
+        <label class="branch-item" data-branch="{{ item.name }}">
+          <input type="checkbox" value="{{ item.name }}" {{ 'checked' if item.checked }}>
+          <span><strong>{{ item.name }}</strong><br>
+            <span class="meta {{ 'ok' if item.state == 'есть' else 'warn' if item.state == 'нет в ветке' else 'bad' if item.state == 'ветка неактивна' else '' }}"
+                   data-meta="{{ item.name }}">{{ item.state }}</span>
+          </span>
+        </label>
+        {% endfor %}
+      {% else %}
+        <div class="hint">Нажмите «Загрузить список веток».</div>
+      {% endif %}
     </div>
     {# по одному скрытому полю на каждую выбранную ветку: единое поле со
        списком через запятую ушло бы на сервер одной строкой-именем #}
@@ -82,7 +102,7 @@
   </div>
 
   <div class="inline-form" style="margin-top:16px">
-    <button class="btn" type="submit">{{ 'Добавить' if mode == 'new' else 'Сохранить' }}</button>
+    <button class="btn" type="submit" {{ 'disabled' if syncing }}>{{ 'Добавить' if mode == 'new' else 'Сохранить' }}</button>
     <a class="btn btn-secondary" href="{{ '/packages' if mode == 'new' else '/packages/' ~ pkg.id }}">Отмена</a>
   </div>
 </form>
@@ -117,7 +137,14 @@ async function loadBranches(keep) {
     activeBranches = await resp.json();
     if (!Array.isArray(activeBranches)) throw new Error(activeBranches.error || 'api error');
   } catch (e) {
-    grid.innerHTML = '<div class="error">Не удалось получить список веток: ' + e + '</div>';
+    // Существующие чекбоксы не трогаем: сетка, отрисованная сервером,
+    // должна переживать недоступность API.
+    if (!grid.querySelector('.branch-item')) {
+      grid.innerHTML = '<div class="error">Не удалось получить список веток: ' + e + '</div>';
+    } else {
+      document.getElementById('branch-warnings').innerHTML =
+        '<div class="warning">Не удалось обновить список веток: ' + e + '</div>';
+    }
     return;
   }
   grid.innerHTML = '';
@@ -180,8 +207,63 @@ function selectAll() {
   setHints();
 }
 
+function initGrid() {
+  // Сетка уже нарисована сервером: подключаем обработчики и восстанавливаем
+  // карту наличия из подписей, чтобы «Выбрать только присутствующие» работал
+  // без повторного запроса к API.
+  document.querySelectorAll('#branch-grid input[type=checkbox]')
+    .forEach(c => c.addEventListener('change', setHints));
+  document.querySelectorAll('#branch-grid .meta[data-meta]').forEach(m => {
+    if (m.textContent.trim() === 'есть') presence[m.dataset.meta] = 'есть';
+  });
+  setHints();
+}
+
+async function enhanceBranches() {
+  // Дополняем серверную сетку недостающими активными ветками; существующие
+  // чекбоксы и их состояния не пересоздаём — перезагрузка страницы их не теряет.
+  let list;
+  try {
+    const resp = await fetch('/api/branches');
+    list = await resp.json();
+    if (!Array.isArray(list)) throw new Error(list.error || 'api error');
+  } catch (e) {
+    document.getElementById('branch-warnings').innerHTML =
+      '<div class="warning">Список веток обновить не удалось (' + e +
+      ') — показаны данные на момент последней синхронизации.</div>';
+    return;
+  }
+  activeBranches = list;
+  const grid = document.getElementById('branch-grid');
+  const have = new Set(
+    Array.from(grid.querySelectorAll('.branch-item')).map(el => el.dataset.branch));
+  list.forEach(branch => {
+    if (have.has(branch)) return;
+    const wrap = document.createElement('label');
+    wrap.className = 'branch-item';
+    wrap.dataset.branch = branch;
+    wrap.innerHTML = '<input type="checkbox" value="' + branch + '">' +
+      '<span><strong>' + branch + '</strong><br>' +
+      '<span class="meta" data-meta="' + branch + '">не проверено</span></span>';
+    grid.appendChild(wrap);
+    wrap.querySelector('input').addEventListener('change', setHints);
+  });
+  setHints();
+}
+
+function reloadBranchList() {
+  const grid = document.getElementById('branch-grid');
+  if (grid.querySelector('.branch-item')) enhanceBranches();
+  else loadBranches(true);
+}
+
 document.getElementById('pkg-form').addEventListener('submit', setHints);
-loadBranches(true);
+if (document.querySelector('#branch-grid .branch-item')) {
+  initGrid();
+  enhanceBranches();   // сервер уже отрисовал сетку — только дополняем её
+} else {
+  loadBranches(true);
+}
 const nameInput = document.getElementById('name');
 if (nameInput) {
   let timer = null;

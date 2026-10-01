@@ -3,6 +3,11 @@
 {% block content %}
 <h1>Каталог образов <span class="muted small">({{ rows | length }})</span></h1>
 
+{% set syncing = refresh_running or job_running %}
+{% if syncing %}
+<div class="warning"><strong>Идёт синхронизация с репозиториями</strong> — обновление каталога
+  образов временно недоступно (это большой запрос к rdb): дождитесь завершения.</div>
+{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 {% if synced %}<p class="muted small">каталог обновлён: {{ synced | dt }} · rdb.altlinux.org /image/image_info</p>{% endif %}
 
@@ -43,7 +48,8 @@
     <button class="btn btn-secondary" type="submit">Применить</button>
   </form>
   <form method="post" action="/images/refresh" style="margin-left:auto">
-    <button class="btn btn-secondary" type="submit">Обновить каталог</button>
+    <button class="btn btn-secondary" type="submit" {{ 'disabled' if syncing }}
+            title="{{ 'Идёт синхронизация — дождитесь завершения' if syncing else 'Запросить актуальный каталог у rdb' }}">Обновить каталог</button>
   </form>
 </div>
 

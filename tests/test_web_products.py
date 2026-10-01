@@ -406,6 +406,9 @@ def test_compare_selects_disabled_while_syncing(web):
         assert '<select name="left" required disabled>' in page.text
         assert '<select name="right" required disabled>' in page.text
         assert 'type="submit" disabled>Сравнить' in page.text
+        # пресеты ходят в rdb — на время синхронизации тоже выключены
+        assert 'type="submit" disabled>Образ ↔ репозиторий' in page.text
+        assert 'type="submit" disabled>Последний образ ↔ загруженный список' in page.text
     finally:
         app.state.jobs.pop("sync:1", None)
 
@@ -413,6 +416,7 @@ def test_compare_selects_disabled_while_syncing(web):
     page = client.get("/compare")
     assert "Идёт синхронизация" not in page.text
     assert '<select name="left" required >' in page.text
+    assert 'disabled>Образ ↔ репозиторий' not in page.text
     assert '<select name="left" required disabled>' not in page.text
 
 
@@ -434,7 +438,8 @@ def test_settings_shows_and_syncs_reference_lists(web, conn):
     assert "Справочники rdb" in page.text
     # first visit fills them automatically (first database fill)
     kinds = {r["kind"] for r in refs_mod.status(conn)}
-    assert kinds == {"arch", "category"}
+    assert kinds == {"arch", "category", "branch"}
+    assert "Ветки" in page.text
     assert "x86_64" in page.text and "System/Base" in page.text
 
     resp = client.post("/settings/refs/sync", follow_redirects=False)

@@ -1067,7 +1067,9 @@ def list_save_branch(
     branch: str = typer.Argument(..., help="Ветка репозитория (p11, sisyphus…)."),
     arch: Optional[list[str]] = typer.Option(
         None, "--arch", "-a",
-        help="Архитектура; флаг можно повторять (по умолчанию все).",
+        help="Архитектура; флаг можно повторять (по умолчанию все). "
+             "noarch — пакеты без привязки к архитектуре: добавляйте явно, "
+             "иначе срез их не включит.",
     ),
     title: str = typer.Option("", "--title", "-t"),
     product: Optional[str] = typer.Option(None, "--product", "-p"),
@@ -1379,10 +1381,10 @@ def meta_status(
 
         ref_rows = refs.status(conn)
         if ref_rows:
-            table = Table(title="Справочники: архитектуры и группы ПО")
+            table = Table(title="Справочники: ветки, архитектуры и группы ПО")
             for column in ("Справочник", "Строк", "Обновлён"):
                 table.add_column(column)
-            labels = {"arch": "архитектуры", "category": "группы ПО"}
+            labels = {"branch": "ветки", "arch": "архитектуры", "category": "группы ПО"}
             for row in ref_rows:
                 table.add_row(
                     labels.get(row["kind"], row["kind"]),
@@ -1392,7 +1394,7 @@ def meta_status(
             console.print(table)
         else:
             console.print(
-                "[dim]справочники архитектур/групп не загружены — alttrack meta refs[/dim]"
+                "[dim]справочники не загружены — alttrack meta refs[/dim]"
             )
     finally:
         conn.close()
@@ -1402,7 +1404,7 @@ def meta_status(
 def meta_refs(
     db: Optional[Path] = DB_OPTION,
 ) -> None:
-    """Обновить справочники архитектур и групп ПО из rdb."""
+    """Обновить справочники веток, архитектур и групп ПО из rdb."""
     cfg = _cfg(db)
     conn = open_db(cfg.db_path)
     client = _client(cfg)
@@ -1415,9 +1417,9 @@ def meta_refs(
         client.close()
         conn.close()
     console.print(
-        f"[green]справочники обновлены:[/green] архитектур {report['arch']}, "
-        f"групп ПО {report['category']} (ветки: {', '.join(report['branches']) or '—'}, "
-        f"{report['synced_at']})"
+        f"[green]справочники обновлены:[/green] веток {report['branch']}, "
+        f"архитектур {report['arch']}, групп ПО {report['category']} "
+        f"({report['synced_at']})"
     )
 
 

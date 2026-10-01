@@ -23,9 +23,6 @@
     <a href="/packages" class="{{ 'active' if request.url.path.startswith('/packages') }}">Пакеты</a>
     <a href="/journal" class="{{ 'active' if request.url.path.startswith('/journal') }}">Журнал</a>
     <a href="/tasks" class="{{ 'active' if request.url.path.startswith('/tasks') }}">Сборки</a>
-    <a href="/archive" class="{{ 'active' if request.url.path == '/archive' }}">Архив</a>
-    <a href="/stats" class="{{ 'active' if request.url.path == '/stats' }}">Статистика</a>
-    <a href="/runs" class="{{ 'active' if request.url.path == '/runs' }}">Прогоны</a>
     <a href="/settings" class="{{ 'active' if request.url.path == '/settings' }}">Настройки</a>
   </nav>
   {% if products %}
@@ -50,10 +47,10 @@
 </header>
 
 {% if refresh_running %}
-<div class="banner">Выполняется освежение данных из репозиториев. Страница обновится автоматически.</div>
+<div class="banner">Выполняется освежение данных из репозиториев. Страница обновится автоматически после паузы в работе.</div>
 {% endif %}
 {% if job_running %}
-<div class="banner" id="job-banner">Фоновая задача: <span id="job-stage">{{ job_stage or 'работает…' }}</span> — страница обновится автоматически.</div>
+<div class="banner" id="job-banner">Фоновая задача: <span id="job-stage">{{ job_stage or 'работает…' }}</span> — страница обновится автоматически после паузы в работе.</div>
 {% endif %}
 
 <main>
@@ -75,8 +72,20 @@ async function triggerRefresh() {
     if (resp.ok || resp.status === 409) location.reload();
   } catch (e) { console.error(e); }
 }
+{% if refresh_running or job_running %}
+// Автоперезагрузка ждёт паузы пользователя: иначе перезагрузка перехватывает
+// только что сделанный клик (страница «возвращается сама в себя») и обрывает
+// набранную в форму работу. Активность = клик, колесо, клавиша, ввод.
+let lastActivity = Date.now();
+['pointerdown', 'wheel', 'keydown', 'input', 'change'].forEach(ev =>
+  window.addEventListener(ev, () => { lastActivity = Date.now(); }, {passive: true}));
+const idleMs = () => Date.now() - lastActivity;
+{% endif %}
 {% if refresh_running %}
-setTimeout(() => location.reload(), 5000);
+setTimeout(function tick() {
+  if (idleMs() >= 5000) location.reload();
+  else setTimeout(tick, 2000);
+}, 5000);
 {% endif %}
 {% if job_running %}
 (async function pollJobs() {
@@ -88,8 +97,11 @@ setTimeout(() => location.reload(), 5000);
     if (running.length) {
       if (stage) stage.textContent = running[0].stage || 'работает…';
       setTimeout(pollJobs, 2000);
-    } else {
+    } else if (idleMs() >= 3000) {
       location.reload();
+    } else {
+      // задача кончилась, но пользователь работает — перезагрузка подождёт
+      setTimeout(pollJobs, 2000);
     }
   } catch (e) { setTimeout(pollJobs, 3000); }
 })();

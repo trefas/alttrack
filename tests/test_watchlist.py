@@ -129,3 +129,111 @@ def test_snapshots_stored_as_json_branches(conn, client):
     )
     row = conn.execute("SELECT branches FROM tracked_packages WHERE id=?", (pkg.id,)).fetchone()
     assert json.loads(row["branches"]) == ["sisyphus"]
+
+
+# ---------------------------------------------------------------------------
+# Local branch report (no API calls — used while a sync is running)
+# ---------------------------------------------------------------------------
+def _cache_active(conn, branches: list[str]) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('active_branches', ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (json.dumps(branches),),
+    )
+    conn.commit()
+
+
+def test_local_branch_report_uses_cache_not_api(conn, client):
+    _seed(client)
+    pkg, _ = watchlist.add_package(
+        conn, client, name="firefox",
+        branches=["sisyphus", "p11", "p10"], backfill=False,
+    )
+    # p10 входит в активные ветки, но baseline запомнил её отсутствие (present=0)
+    _cache_active(conn, ["sisyphus", "p11", "p10"])
+    client.calls.clear()
+
+    report = watchlist.local_branch_report(conn, pkg)
+
+    assert report is not None
+    assert report["ok"] == ["sisyphus", "p11"]
+    assert report["missing"] == ["p10"]
+    assert report["inactive"] == []
+    assert any("сейчас нет" in w for w in report["warnings"])
+    assert client.calls == [], f"ожидалось отсутствие обращений к rdb: {client.calls}"
+
+
+def test_local_branch_report_marks_inactive_branch(conn, client):
+    _seed(client)
+    client.versions["firefox"] = list(client.versions["firefox"]) + [
+        {"branch": "p07", "version": "154.0", "release": "alt1", "pkghash": "h3"}
+    ]
+    pkg, _ = watchlist.add_package(
+        conn, client, name="firefox", branches=["sisyphus", "p07"], backfill=False
+    )
+    _cache_active(conn, ["sisyphus", "p11", "p10"])  # p07 больше не публикуется
+
+    report = watchlist.local_branch_report(conn, pkg)
+
+    assert report is not None
+    assert report["inactive"] == ["p07"]
+    assert any("не входит" in w for w in report["warnings"])
+
+
+def test_local_branch_report_needs_cache(conn, client):
+    """Без завершённого освежения кэша нет — отчёт должен просить живую проверку."""
+    _seed(client)
+    pkg, _ = watchlist.add_package(conn, client, name="firefox", backfill=False)
+    assert watchlist.local_branch_report(conn, pkg) is None
+
+
+# ---------------------------------------------------------------------------
+# Current errata view for the package page (errata_seen + event detail)
+# ---------------------------------------------------------------------------
+def test_erratas_for_package_lists_seen_with_detail(conn, client):
+    _seed(client)
+    pkg, _ = watchlist.add_package(conn, client, name="firefox", backfill=False)
+    with conn:
+        conn.executemany(
+            "INSERT INTO errata_seen (errata_id, package_id, branch, first_seen) "
+            "VALUES (?, ?, ?, ?)",
+            [("E-1", pkg.id, "sisyphus", "2026-01-01T00:00:00Z"),
+             ("E-2", pkg.id, "p11", "2026-01-02T00:00:00Z")],
+        )
+    journal.insert_event(
+        conn, package="firefox", package_id=pkg.id, branch="sisyphus",
+        event_type="errata", new_value="E-1",
+        detail={"errata_id": "E-1", "type": "bugfix", "version": "156.0.1-alt1",
+                "refs": ["CVE-2026-1111", "CVE-2026-2222"]},
+    )
+
+    rows = journal.erratas_for_package(conn, pkg.id)
+    # новые первыми (first_seen DESC)
+    assert [r["errata_id"] for r in rows] == ["E-2", "E-1"]
+    assert rows[1]["refs"] == ["CVE-2026-1111", "CVE-2026-2222"]
+    assert rows[1]["version"] == "156.0.1-alt1" and rows[1]["type"] == "bugfix"
+    # события ещё нет — сама errata всё равно видна (id/ветка/дата)
+    assert rows[0]["refs"] == []
+
+    assert journal.erratas_for_package(conn, -1) == []
+
+
+def test_erratas_fall_back_to_archived_event(conn, client):
+    _seed(client)
+    pkg, _ = watchlist.add_package(conn, client, name="firefox", backfill=False)
+    with conn:
+        conn.execute(
+            "INSERT INTO errata_seen (errata_id, package_id, branch, first_seen) "
+            "VALUES ('E-9', ?, 'sisyphus', '2026-01-03T00:00:00Z')",
+            (pkg.id,),
+        )
+        conn.execute(
+            "INSERT INTO journal_archive "
+            "(seq, ts, package_id, package, branch, event_type, new_value, detail, archived_at) "
+            "VALUES (1, '2026-01-03T00:00:00Z', ?, 'firefox', 'sisyphus', 'errata', 'E-9', ?, "
+            "'2026-02-01T00:00:00Z')",
+            (pkg.id, json.dumps({"type": "security", "refs": ["CVE-2026-9999"]})),
+        )
+    rows = journal.erratas_for_package(conn, pkg.id)
+    assert rows[0]["refs"] == ["CVE-2026-9999"]
+    assert rows[0]["type"] == "security"

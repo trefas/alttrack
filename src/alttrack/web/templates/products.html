@@ -39,11 +39,7 @@
       <input type="text" name="title" required placeholder="Образование 11">
       <label>Ветка</label>
       <select name="branch" required>
-        <option value="p11">p11</option>
-        <option value="p10">p10</option>
-        <option value="sisyphus">sisyphus</option>
-        <option value="p9">p9</option>
-        <option value="p8">p8</option>
+        {% for b in branch_list %}<option value="{{ b }}" {{ 'selected' if b == 'p11' }}>{{ b }}</option>{% endfor %}
       </select>
       <label>Edition образа</label>
       <input type="text" name="edition" list="edition-list" placeholder="alt-education, alt-server…">
@@ -55,7 +51,7 @@
       <select name="arch" required>
         {% for a in arch_list %}<option value="{{ a }}" {{ 'selected' if a == 'x86_64' }}>{{ a }}</option>{% endfor %}
       </select>
-      <p class="hint">Список — из справочника rdb (<a href=\"/settings\">Настройки → Справочники</a>).</p>
+      <p class="hint">Ветки и архитектуры — из справочника rdb (<a href="/settings">Настройки → Справочники</a>).</p>
       <p class="hint">Продукт = ветка + edition + архитектура. Состав наполняется образами
         с rdb.altlinux.org, состав продукта обновляется diff-ом.</p>
       <button class="btn" type="submit">Создать продукт</button>

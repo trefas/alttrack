@@ -3,6 +3,13 @@
 {% block content %}
 <h1>Отслеживаемые пакеты <span class="muted small">({{ packages | length }})</span></h1>
 
+{% set syncing = refresh_running or job_running %}
+{% if syncing %}
+<div class="warning"><strong>Идёт синхронизация с репозиториями</strong> — добавление и
+  изменение пакетов временно недоступны, страница может обновиться автоматически:
+  дождитесь завершения.</div>
+{% endif %}
+
 <div class="inline-form" style="margin-bottom:14px">
   <form method="get" action="/packages" class="inline-form">
     <div class="field"><label>Поиск</label>
@@ -10,7 +17,12 @@
     </div>
     <button class="btn btn-secondary" type="submit">Найти</button>
   </form>
+  {% if syncing %}
+  <span class="btn disabled" style="margin-left:auto"
+        title="Идёт синхронизация — дождитесь завершения">+ Добавить пакет</span>
+  {% else %}
   <a class="btn" href="/packages/new" style="margin-left:auto">+ Добавить пакет</a>
+  {% endif %}
   <a class="btn btn-secondary" href="/images"
      title="Выберите образ дистрибутива — все его srpm уйдут в отслеживание продукта">
     + Добавить из образа
@@ -39,14 +51,20 @@
     </td>
     <td class="mono small">{{ p.last_checked_at | dt }}</td>
     <td class="small muted">{{ p.note }}</td>
-    <td class="small"><a href="/packages/{{ p.id }}/edit">изменить</a></td>
+    <td class="small">
+      {% if syncing %}
+      <span class="muted" title="Идёт синхронизация — дождитесь завершения">изменить</span>
+      {% else %}
+      <a href="/packages/{{ p.id }}/edit">изменить</a>
+      {% endif %}
+    </td>
   </tr>
   {% endfor %}
 </table>
 {% else %}
 <div class="empty">
   {% if q %}Ничего не найдено по запросу «{{ q }}».{% else %}Список пуст.{% endif %}
-  <a href="/packages/new">Добавить пакет</a>
+  {% if not syncing %}<a href="/packages/new">Добавить пакет</a>{% endif %}
 </div>
 {% endif %}
 {% endblock %}

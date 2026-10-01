@@ -190,6 +190,58 @@ def get_event(conn: sqlite3.Connection, seq: int, store: str = "live") -> Event 
     return Event.from_row(row, store=store) if row else None
 
 
+def erratas_for_package(
+    conn: sqlite3.Connection, package_id: int, limit: int = 100
+) -> list[dict[str, Any]]:
+    """Errata currently known for a package — the "current state" view that
+    the journal (history only) cannot give.
+
+    ``errata_seen`` is the canonical set (one row per errata id, added once by
+    a refresh pass, dropped when the package is removed); type, version and
+    CVE references live in the recording event's ``detail``, which may already
+    have been moved to the archive — both stores are consulted.
+    """
+    rows = conn.execute(
+        """
+        SELECT s.errata_id, s.branch, s.first_seen,
+               COALESCE(
+                   (SELECT j.detail FROM journal j
+                     WHERE j.package_id = s.package_id
+                       AND j.event_type = 'errata'
+                       AND j.new_value = s.errata_id
+                     LIMIT 1),
+                   (SELECT a.detail FROM journal_archive a
+                     WHERE a.package_id = s.package_id
+                       AND a.event_type = 'errata'
+                       AND a.new_value = s.errata_id
+                     LIMIT 1),
+                   '{}') AS detail
+        FROM errata_seen s
+        WHERE s.package_id = ?
+        ORDER BY s.first_seen DESC
+        LIMIT ?
+        """,
+        (package_id, limit),
+    ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            detail = json.loads(row["detail"])
+        except (TypeError, ValueError):
+            detail = {}
+        out.append(
+            {
+                "errata_id": str(row["errata_id"]),
+                "branch": str(row["branch"]),
+                "first_seen": str(row["first_seen"]),
+                "type": detail.get("type"),
+                "version": detail.get("version"),
+                "refs": [str(r) for r in (detail.get("refs") or [])],
+            }
+        )
+    return out
+
+
 def stats(conn: sqlite3.Connection, *, scope: str = "all") -> dict[str, Any]:
     """Aggregate counters used by ``alttrack stats`` and the dashboard."""
     by_type: dict[str, int] = {}
