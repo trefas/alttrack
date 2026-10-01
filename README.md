@@ -180,6 +180,39 @@ OnUnitActiveSec=30min
 Если приложение работает через `alttrack serve`, дополнительный cron не нужен —
 освежение выполняется автоматически при старте и по интервалу.
 
+## Запуск в Docker
+
+Сборка и запуск веб-интерфейса (`alttrack serve`) в контейнере:
+
+```bash
+docker compose up -d --build   # сборка образа и запуск
+docker compose ps              # дождаться статуса healthy
+open http://127.0.0.1:8300     # или откройте в браузере
+```
+
+Образ: `python:3.13-slim`, установка пакета обычным `pip install .`,
+непривилегированный пользователь `app`, порт `8300`.
+
+| Что | Где |
+|---|---|
+| база SQLite | том `alttrack-data` → `/data/alttrack.db` |
+| `config.toml` | том `alttrack-config` → `/config/config.toml` |
+| healthcheck | `GET /healthz` |
+
+Конфигурация — через переменные окружения сервиса в `docker-compose.yml`
+(значения берутся из `.env`, см. `.env.example`): `ALTTRACK_PORT` (порт хоста),
+`ALTTRACK_REFRESH_INTERVAL`, `ALTTRACK_ARCHIVE_AFTER_DAYS`,
+`ALTTRACK_HTTP_TIMEOUT`, `ALTTRACK_API_BASE_URL`.
+
+```bash
+docker compose logs -f            # журнал
+docker compose down               # остановить (тома сохраняются)
+docker compose down -v            # остановить и удалить тома (потеря данных)
+docker compose exec alttrack alttrack watch list   # CLI внутри контейнера
+```
+
+Обновление после изменений в коде: `docker compose up -d --build`.
+
 ## Разработка
 
 ```bash

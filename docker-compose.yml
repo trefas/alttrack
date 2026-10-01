@@ -1,0 +1,34 @@
+services:
+  alttrack:
+    build: .
+    image: alttrack:0.1.0
+    container_name: alttrack
+    init: true
+    restart: unless-stopped
+    ports:
+      # host port (change via .env) -> container 8300
+      - "${ALTTRACK_PORT:-8300}:8300"
+    environment:
+      # Any ALTTRACK_* variable from config.py can be passed here;
+      # values come from .env (see .env.example) or the shell.
+      ALTTRACK_REFRESH_INTERVAL: "${ALTTRACK_REFRESH_INTERVAL:-30}"
+      ALTTRACK_ARCHIVE_AFTER_DAYS: "${ALTTRACK_ARCHIVE_AFTER_DAYS:-90}"
+      ALTTRACK_HTTP_TIMEOUT: "${ALTTRACK_HTTP_TIMEOUT:-30.0}"
+      ALTTRACK_API_BASE_URL: "${ALTTRACK_API_BASE_URL:-https://rdb.altlinux.org/api}"
+    volumes:
+      - alttrack-data:/data        # SQLite database
+      - alttrack-config:/config    # config.toml (web "Settings" section)
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ.get('ALTTRACK_PORT', '8300'), timeout=5)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  alttrack-data:
+  alttrack-config:
