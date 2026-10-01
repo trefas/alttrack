@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block title %}{{ pkg.name }} — alttrack{% endblock %}
+{% block content %}
+<h1>
+  {{ pkg.name }}
+  {% if pkg.enabled %}<span class="pill pill-ok">отслеживается</span>
+  {% else %}<span class="pill pill-warn">пауза</span>{% endif %}
+</h1>
+
+{% if created %}<div class="success">Пакет добавлен: baseline сохранён, история сборок импортирована.</div>{% endif %}
+{% if saved %}<div class="success">Изменения сохранены.</div>{% endif %}
+
+<div class="inline-form" style="margin-bottom:16px">
+  <a class="btn btn-secondary" href="/packages/{{ pkg.id }}/edit">Изменить</a>
+  <a class="btn btn-secondary" href="/journal?package={{ pkg.name }}">События в журнале</a>
+  <a class="btn btn-secondary" href="/tasks?package={{ pkg.name }}">Сборочные задания</a>
+  <form method="post" action="/packages/{{ pkg.id }}/delete" class="inline-form"
+        onsubmit="return confirm('Убрать {{ pkg.name }} из отслеживания?');">
+    <label class="checkbox-line" style="margin:0">
+      <input type="checkbox" name="purge" value="1"> удалить и журнал
+    </label>
+    <button class="btn btn-danger btn-small" type="submit">Убрать из отслеживания</button>
+  </form>
+</div>
+
+{% if pkg.note %}<p class="muted">{{ pkg.note }}</p>{% endif %}
+
+<div class="card">
+  <h2>Состояние по веткам</h2>
+  <table>
+    <tr><th>Ветка</th><th>Наличие</th><th>Версия</th><th>pkghash</th><th>Сопровождающий</th><th>ACL</th><th>Проверено</th></tr>
+    {% for branch in pkg.branches %}
+    {% set snap = snaps.get(branch) %}
+    <tr>
+      <td><strong>{{ branch }}</strong>{% if branch not in active_branches %} <span class="pill pill-warn">неактивна</span>{% endif %}</td>
+      <td>
+        {% if snap and snap.present %}<span class="pill pill-ok">есть</span>
+        {% elif snap %}<span class="pill pill-warn">нет</span>
+        {% else %}<span class="pill pill-bad">нет снимка</span>{% endif %}
+      </td>
+      <td class="mono">{{ (snap.version ~ '-' ~ snap.release) if snap and snap.version else '—' }}</td>
+      <td class="mono small">{{ snap.pkghash if snap else '—' }}</td>
+      <td>{{ snap.packager if snap and snap.packager else '—' }}</td>
+      <td class="small">{{ (snap.acl.split(', ') | join(', ')) if snap and snap.acl else '—' }}</td>
+      <td class="mono small">{{ snap.observed_at | dt if snap else '—' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="small muted">Добавлено: {{ pkg.added_at | dt }} · последняя проверка: {{ pkg.last_checked_at | dt }}</p>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h2>Сборочные задания <span class="muted small">({{ tasks_total }})</span></h2>
+    {% if pkg_tasks %}
+    <table class="compact">
+      <tr><th>Задание</th><th>Ветка</th><th>Состояние</th><th>Обновлено</th></tr>
+      {% for t in pkg_tasks %}
+      <tr>
+        <td><a href="/tasks/{{ t.task_id }}">{{ t.task_id }}</a></td>
+        <td>{{ t.branch }}</td>
+        <td>
+          {% if t.state in ('FAILED', 'EPERM') %}<span class="pill pill-bad">{{ t.state }}</span>
+          {% elif t.state == 'DONE' %}<span class="pill pill-ok">{{ t.state }}</span>
+          {% elif t.terminal %}<span class="pill">{{ t.state }}</span>
+          {% else %}<span class="pill pill-warn">{{ t.state }}</span>{% endif %}
+        </td>
+        <td class="mono small">{{ t.last_seen_at | dt }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="small"><a href="/tasks?package={{ pkg.name }}">все задания →</a></p>
+    {% else %}
+    <p class="muted small">Заданий пока не зафиксировано.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>История событий <span class="muted small">({{ total }})</span></h2>
+    {% if events %}
+    <ul class="timeline">
+      {% for ev in events %}
+      <li>
+        <span class="when">{{ ev.ts | dt }} · {{ ev.branch or '—' }} ·
+          {% if ev.store == 'archive' %}<span class="pill pill-arch">архив</span>{% endif %}
+        </span>
+        <div><strong>{{ ev.event_type | label }}</strong>
+          {% if ev.old_value or ev.new_value %}
+          — <span class="mono">{{ ev.old_value or '—' }} → {{ ev.new_value or '—' }}</span>
+          {% endif %}
+        </div>
+        {% if ev.detail %}
+        <div class="small muted">{{ ev.detail }}</div>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    <p class="small"><a href="/journal?package={{ pkg.name }}">весь журнал пакета →</a></p>
+    {% else %}
+    <p class="muted small">Событий ещё нет.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

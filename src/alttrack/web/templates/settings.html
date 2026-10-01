@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Настройки — alttrack{% endblock %}
+{% block content %}
+<h1>Настройки</h1>
+
+{% if saved %}<div class="success">Настройки сохранены в {{ cfg.config_path }}.</div>{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Освежение</h2>
+    <form method="post" action="/settings" class="stack">
+      <label>Интервал освежения (минуты)</label>
+      <input type="number" name="refresh_interval" min="1" value="{{ cfg.refresh_interval }}">
+      <div class="hint">Запуск при старте + фоновый интервал. Сборочные задания опрашиваются в том же прогоне,
+      поэтому задержка обнаружения сбоя сборки равна этому интервалу.</div>
+
+      <label>Горизонт новых сборочных заданий (дни)</label>
+      <input type="number" name="task_history_days" min="1" value="{{ cfg.task_history_days }}">
+      <div class="hint">Задания старше этого срока не считаются новыми.</div>
+
+      <label>История сборок при добавлении (на ветку)</label>
+      <input type="number" name="backfill_limit" min="0" max="1000" value="{{ cfg.backfill_limit }}">
+
+      <button class="btn" type="submit">Сохранить</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Архивация журнала</h2>
+    <form method="post" action="/settings" class="stack">
+      <input type="hidden" name="auto_archive_managed" value="1">
+      <label>Архивировать события старше (дней)</label>
+      <input type="number" name="archive_after_days" min="1" value="{{ cfg.archive_after_days }}">
+
+      <label>Лимит живого журнала (строк)</label>
+      <input type="number" name="max_live_rows" min="100" value="{{ cfg.max_live_rows }}">
+
+      <div class="checkbox-line">
+        <input type="checkbox" id="auto_archive" name="auto_archive" value="1" {{ 'checked' if cfg.auto_archive }}>
+        <label for="auto_archive">Архивировать автоматически при каждом прогоне</label>
+      </div>
+
+      <div class="inline-form">
+        <button class="btn" type="submit">Сохранить</button>
+        <a class="btn btn-secondary" href="/archive">Перейти к архивации</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Окружение</h2>
+  <table class="compact">
+    <tr><td>База данных</td><td class="mono">{{ cfg.db_path }}</td></tr>
+    <tr><td>Конфиг</td><td class="mono">{{ cfg.config_path }}</td></tr>
+    <tr><td>API</td><td class="mono">{{ cfg.api_base_url }}</td></tr>
+    <tr><td>Таймаут HTTP / параллелизм</td><td class="mono">{{ cfg.http_timeout }} с / {{ cfg.http_concurrency }}</td></tr>
+    <tr><td>Слушатель</td><td class="mono">{{ cfg.host }}:{{ cfg.port }}</td></tr>
+  </table>
+  <p class="hint">Те же настройки доступны в CLI: <code>alttrack config</code>, переменные окружения
+  <code>ALTTRACK_*</code> и файл конфига.</p>
+</div>
+{% endblock %}

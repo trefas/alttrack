@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}alttrack{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand"><a href="/">alttrack</a></div>
+  <nav>
+    <a href="/packages" class="{{ 'active' if request.url.path.startswith('/packages') }}">Пакеты</a>
+    <a href="/journal" class="{{ 'active' if request.url.path.startswith('/journal') }}">Журнал</a>
+    <a href="/tasks" class="{{ 'active' if request.url.path.startswith('/tasks') }}">Сборки</a>
+    <a href="/archive" class="{{ 'active' if request.url.path == '/archive' }}">Архив</a>
+    <a href="/stats" class="{{ 'active' if request.url.path == '/stats' }}">Статистика</a>
+    <a href="/runs" class="{{ 'active' if request.url.path == '/runs' }}">Прогоны</a>
+    <a href="/settings" class="{{ 'active' if request.url.path == '/settings' }}">Настройки</a>
+  </nav>
+  <div class="refresh-box">
+    {% if refresh_running %}
+      <span class="pill pill-run">идёт освежение…</span>
+    {% else %}
+      <button id="refresh-btn" class="btn btn-small" onclick="triggerRefresh()">Обновить сейчас</button>
+    {% endif %}
+  </div>
+</header>
+
+{% if refresh_running %}
+<div class="banner">Выполняется освежение данных из репозиториев. Страница обновится автоматически.</div>
+{% endif %}
+
+<main>
+{% block content %}{% endblock %}
+</main>
+
+<footer>
+  alttrack · база: {{ cfg.db_path }} · интервал освежения: {{ cfg.refresh_interval }} мин
+  {% if refresh_last %}· последний прогон: #{{ refresh_last.run_id }}
+  <span class="{{ 'ok' if refresh_last.status == 'ok' else 'warn' }}">({{ refresh_last.status }})</span>{% endif %}
+</footer>
+
+<script>
+async function triggerRefresh() {
+  const btn = document.getElementById('refresh-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'запуск…'; }
+  try {
+    const resp = await fetch('/refresh', {method: 'POST'});
+    if (resp.ok || resp.status === 409) location.reload();
+  } catch (e) { console.error(e); }
+}
+{% if refresh_running %}
+setTimeout(() => location.reload(), 5000);
+{% endif %}
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

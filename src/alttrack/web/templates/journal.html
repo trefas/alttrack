@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Журнал — alttrack{% endblock %}
+{% block content %}
+<h1>Журнал событий <span class="muted small">({{ total }})</span></h1>
+
+<form method="get" action="/journal" class="filters">
+  <div class="field">
+    <label>Поиск (FTS)</label>
+    <input type="text" name="q" value="{{ filters.q }}" placeholder="firefox CVE 156.0">
+  </div>
+  <div class="field">
+    <label>Пакет</label>
+    <select name="package">
+      <option value="">все</option>
+      {% for p in packages %}
+      <option value="{{ p.name }}" {{ 'selected' if filters.package == p.name }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>Ветка</label>
+    <input type="text" name="branch" value="{{ filters.branch }}" placeholder="sisyphus">
+  </div>
+  <div class="field">
+    <label>Событие</label>
+    <select name="event_type">
+      <option value="">все</option>
+      {% for t in event_types %}
+      <option value="{{ t }}" {{ 'selected' if t in filters.event_type }}>{{ t }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>Хранилище</label>
+    <select name="scope">
+      {% for s in ['all', 'live', 'archive'] %}
+      <option value="{{ s }}" {{ 'selected' if filters.scope == s }}>
+        {{ {'all': 'журнал + архив', 'live': 'только журнал', 'archive': 'только архив'}[s] }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>С</label>
+    <input type="date" name="since" value="{{ filters.since }}">
+  </div>
+  <div class="field">
+    <label>По</label>
+    <input type="date" name="until" value="{{ filters.until }}">
+  </div>
+  <button class="btn" type="submit">Применить</button>
+  <a class="btn btn-secondary" href="/journal">Сбросить</a>
+</form>
+
+{% if events %}
+<table>
+  <tr><th>Время</th><th>Пакет</th><th>Ветка</th><th>Событие</th><th>Было → стало</th><th>Детали</th><th></th></tr>
+  {% for ev in events %}
+  <tr>
+    <td class="mono small">{{ ev.ts | dt }}</td>
+    <td>{% if ev.package_id %}<a href="/packages/{{ ev.package_id }}">{{ ev.package }}</a>{% else %}{{ ev.package }}{% endif %}</td>
+    <td>{{ ev.branch or '—' }}</td>
+    <td>
+      <strong>{{ ev.event_type | label }}</strong>
+      {% if ev.event_type == 'task_failed' %}<span class="pill pill-bad">сбой</span>{% endif %}
+    </td>
+    <td class="mono small">{{ ev.old_value or '—' }} → {{ ev.new_value or '—' }}</td>
+    <td class="small muted">{{ ev.detail | tojson if ev.detail else '' }}</td>
+    <td>{% if ev.store == 'archive' %}<span class="pill pill-arch">архив</span>{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="pager">
+  {% if page > 1 %}
+    <a class="btn btn-secondary btn-small" href="{{ pager_url(page - 1) }}">← назад</a>
+  {% endif %}
+  <span>страница {{ page }} из {{ pages }}</span>
+  {% if page < pages %}
+    <a class="btn btn-secondary btn-small" href="{{ pager_url(page + 1) }}">вперёд →</a>
+  {% endif %}
+</div>
+{% else %}
+<div class="empty">
+  {% if filters.q %}По запросу «{{ filters.q }}» ничего не найдено.{% else %}Событий нет.{% endif %}
+</div>
+{% endif %}
+{% endblock %}

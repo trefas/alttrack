@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Новый пакет' if mode == 'new' else 'Изменить: ' + pkg.name }} — alttrack{% endblock %}
+{% block content %}
+<h1>{{ 'Добавление пакета' if mode == 'new' else 'Редактирование: ' + pkg.name }}</h1>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if report and report.warnings %}
+  {% for w in report.warnings %}<div class="warning">{{ w }}</div>{% endfor %}
+{% endif %}
+
+<form method="post" action="{{ '/packages' if mode == 'new' else '/packages/' ~ pkg.id }}" class="stack" id="pkg-form">
+  <div class="card">
+    <h2>Пакет</h2>
+    {% if mode == 'new' %}
+      <label for="name">Имя пакета</label>
+      <input type="text" id="name" name="name" value="{{ name or '' }}" required
+             autocomplete="off" placeholder="например firefox">
+      <div class="hint">Имя проверяется по API; можно вводить бинарное имя — будет разрешено в исходный пакет.</div>
+      <div id="name-hint" class="hint"></div>
+    {% else %}
+      <label>Имя</label>
+      <input type="text" value="{{ pkg.name }}" disabled>
+      <div class="hint">Имя изменить нельзя — при необходимости удалите пакет и добавьте заново.</div>
+    {% endif %}
+
+    <label>Заметка</label>
+    <input type="text" name="note" value="{{ (pkg.note if pkg else '') or '' }}" placeholder="зачем отслеживаем">
+  </div>
+
+  <div class="card">
+    <h2>Ветки (репозитории)</h2>
+    <div class="hint">Наличие пакета в ветке проверяется по API. Отсутствие — предупреждение, но выбрать можно: событие о появлении будет записано автоматически.</div>
+
+    <div class="inline-form" style="margin-top:10px">
+      <button type="button" class="btn btn-secondary btn-small" onclick="loadBranches(true)">Загрузить список веток</button>
+      <button type="button" class="btn btn-secondary btn-small" onclick="checkPresence()">Проверить наличие</button>
+      <button type="button" class="btn btn-secondary btn-small" onclick="selectPresent()">Выбрать только присутствующие</button>
+      <button type="button" class="btn btn-secondary btn-small" onclick="selectAll()">Выбрать все</button>
+    </div>
+
+    <div id="branch-warnings"></div>
+    <div class="branch-grid" id="branch-grid">
+      <div class="hint">Нажмите «Загрузить список веток».</div>
+    </div>
+    {# по одному скрытому полю на каждую выбранную ветку: единое поле со
+       списком через запятую ушло бы на сервер одной строкой-именем #}
+    <div id="branches-fields">
+      <input type="hidden" name="branches_submitted" value="1">
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Что отслеживать</h2>
+    <div class="checkbox-line">
+      <input type="checkbox" id="watch_errata" name="watch_errata" value="1"
+             {{ 'checked' if not pkg or pkg.watch_errata }}>
+      <label for="watch_errata">Errata и уязвимости (CVE)</label>
+    </div>
+    <div class="checkbox-line">
+      <input type="checkbox" id="watch_maintainer" name="watch_maintainer" value="1"
+             {{ 'checked' if not pkg or pkg.watch_maintainer }}>
+      <label for="watch_maintainer">Сопровождающего (packager / ACL)</label>
+    </div>
+    <div class="checkbox-line">
+      <input type="checkbox" id="watch_tasks" name="watch_tasks" value="1"
+             {{ 'checked' if not pkg or pkg.watch_tasks }}>
+      <label for="watch_tasks">Сборочные задания и их состояние</label>
+    </div>
+    {% if mode == 'new' %}
+    <div class="checkbox-line">
+      <input type="checkbox" id="backfill" name="backfill" value="1" checked>
+      <label for="backfill">Импортировать историю сборок</label>
+    </div>
+    <label>Сколько сборок на ветку</label>
+    <input type="number" name="backfill_limit" value="50" min="0" max="1000" style="max-width:160px">
+    {% else %}
+    <div class="checkbox-line">
+      <input type="checkbox" id="enabled" name="enabled" value="1" {{ 'checked' if pkg.enabled }}>
+      <label for="enabled">Отслеживание включено</label>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="inline-form" style="margin-top:16px">
+    <button class="btn" type="submit">{{ 'Добавить' if mode == 'new' else 'Сохранить' }}</button>
+    <a class="btn btn-secondary" href="{{ '/packages' if mode == 'new' else '/packages/' ~ pkg.id }}">Отмена</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const mode = {{ mode | tojson }};
+const currentBranches = {{ (pkg.branches if pkg else []) | tojson }};
+let activeBranches = [];
+let presence = {};
+
+function setHints() {
+  // One hidden input per selected branch: multipart encodes repeated fields
+  // as a list, a single comma-joined field would arrive as one bogus name.
+  const box = document.getElementById('branches-fields');
+  box.querySelectorAll('input[name="branches"]').forEach(el => el.remove());
+  Array.from(document.querySelectorAll('#branch-grid input[type=checkbox]:checked'))
+    .forEach(c => {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = 'branches';
+      input.value = c.value;
+      box.appendChild(input);
+    });
+}
+
+async function loadBranches(keep) {
+  const grid = document.getElementById('branch-grid');
+  try {
+    const resp = await fetch('/api/branches');
+    activeBranches = await resp.json();
+    if (!Array.isArray(activeBranches)) throw new Error(activeBranches.error || 'api error');
+  } catch (e) {
+    grid.innerHTML = '<div class="error">Не удалось получить список веток: ' + e + '</div>';
+    return;
+  }
+  grid.innerHTML = '';
+  activeBranches.forEach(branch => {
+    const checked = currentBranches.includes(branch) ? 'checked' : '';
+    const wrap = document.createElement('label');
+    wrap.className = 'branch-item';
+    wrap.dataset.branch = branch;
+    wrap.innerHTML = '<input type="checkbox" value="' + branch + '" ' + checked + '>' +
+      '<span><strong>' + branch + '</strong><br><span class="meta" data-meta="' + branch + '">' +
+      (keep ? '…' : 'не проверено') + '</span></span>';
+    grid.appendChild(wrap);
+  });
+  grid.querySelectorAll('input[type=checkbox]').forEach(c => c.addEventListener('change', setHints));
+  setHints();
+  if (document.getElementById('name')) checkPresence();
+}
+
+async function checkPresence() {
+  const name = (document.getElementById('name') || {}).value || {{ (pkg.name if pkg else '') | tojson }};
+  if (!name.trim()) return;
+  const boxes = Array.from(document.querySelectorAll('#branch-grid input[type=checkbox]'));
+  const selected = boxes.length ? boxes.map(b => b.value) : activeBranches;
+  let report;
+  try {
+    const resp = await fetch('/api/packages/check?name=' + encodeURIComponent(name) +
+      '&branches=' + encodeURIComponent(selected.join(',')));
+    report = await resp.json();
+    if (report.error) throw new Error(report.error);
+  } catch (e) {
+    document.getElementById('branch-warnings').innerHTML = '<div class="error">Ошибка проверки: ' + e + '</div>';
+    return;
+  }
+  presence = {};
+  (report.ok || []).forEach(b => presence[b] = 'есть');
+  (report.missing || []).forEach(b => presence[b] = 'нет в ветке');
+  (report.inactive || []).forEach(b => presence[b] = 'ветка неактивна');
+  boxes.forEach(box => {
+    const meta = document.querySelector('[data-meta="' + box.value + '"]');
+    if (meta) {
+      const state = presence[box.value] || 'не проверено';
+      const cls = state === 'есть' ? 'ok' : state === 'нет в ветке' ? 'warn' : state === 'ветка неактивна' ? 'bad' : '';
+      meta.textContent = state;
+      meta.className = 'meta ' + cls;
+    }
+  });
+  const warnBox = document.getElementById('branch-warnings');
+  warnBox.innerHTML = (report.warnings || []).map(w => '<div class="warning">' + w + '</div>').join('');
+}
+
+function selectPresent() {
+  document.querySelectorAll('#branch-grid input[type=checkbox]').forEach(c => {
+    c.checked = presence[c.value] === 'есть';
+  });
+  setHints();
+}
+
+function selectAll() {
+  document.querySelectorAll('#branch-grid input[type=checkbox]').forEach(c => c.checked = true);
+  setHints();
+}
+
+document.getElementById('pkg-form').addEventListener('submit', setHints);
+loadBranches(true);
+const nameInput = document.getElementById('name');
+if (nameInput) {
+  let timer = null;
+  nameInput.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { loadBranches(true); }, 500);
+  });
+}
+</script>
+{% endblock %}

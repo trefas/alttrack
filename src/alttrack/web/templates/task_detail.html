@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Задание {{ task.task_id }} — alttrack{% endblock %}
+{% block content %}
+<h1>
+  Задание <span class="mono">{{ task.task_id }}</span>
+  <span class="muted">({{ task.branch }})</span>
+  {% if task.state in ('FAILED', 'EPERM') %}<span class="pill pill-bad">{{ task.state }}</span>
+  {% elif task.state == 'DONE' %}<span class="pill pill-ok">{{ task.state }}</span>
+  {% elif task.terminal %}<span class="pill">{{ task.state }}</span>
+  {% else %}<span class="pill pill-warn">{{ task.state }}</span>{% endif %}
+</h1>
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Состояние</h2>
+    <table class="compact">
+      <tr><td>Ветка</td><td>{{ task.branch }}</td></tr>
+      <tr><td>Пакеты</td><td>{{ task.packages | join(', ') if task.packages else '—' }}</td></tr>
+      <tr><td>Владелец</td><td>{{ task.owner or '—' }}</td></tr>
+      <tr><td>Этап</td><td class="mono">{{ task.stage or '—' }}</td></tr>
+      <tr><td>Попытка</td><td>{{ task.try_no or '—' }} (итерация {{ task.iter_no or '—' }})</td></tr>
+      <tr><td>Testonly</td><td>{{ 'да' if task.testonly else 'нет' }}</td></tr>
+      <tr><td>Изменено</td><td class="mono">{{ task.changed_at | dt }}</td></tr>
+      <tr><td>Замечено</td><td class="mono">{{ task.first_seen_at | dt }}</td></tr>
+      <tr><td>Последний опрос</td><td class="mono">{{ task.last_seen_at | dt }}</td></tr>
+    </table>
+    {% if task.message %}<div class="warning">{{ task.message }}</div>{% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Субтаски</h2>
+    {% if task.subtasks %}
+    <table class="compact">
+      <tr><th>NVR</th><th>Архитектуры</th></tr>
+      {% for s in task.subtasks %}
+      <tr>
+        <td class="mono small">{{ s.subtask_tag_name or s.subtask_dir or '—' }}</td>
+        <td class="small">
+          {% for a in s.archs or [] %}
+            <span class="tag {{ 'ok' if a.stage_status == 'processed' }}">{{ a.arch }}: {{ a.stage_status }}</span>
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted small">Нет данных о субтасках (задание импортировано из истории).</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h2>Этапы (таймлайн)</h2>
+    {% if task.stages %}
+    <ul class="timeline">
+      {% for s in task.stages %}
+      <li>
+        <span class="when">{{ s.ts | dt }}</span>
+        <div><strong>{{ s.state }}</strong>{% if s.stage %} · <span class="mono">{{ s.stage }}</span>{% endif %}</div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="muted small">Этапы ещё не фиксировались.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>События журнала по заданию</h2>
+    {% if task.events %}
+    <table class="compact">
+      <tr><th>Время</th><th>Событие</th><th>Переход</th></tr>
+      {% for ev in task.events %}
+      <tr>
+        <td class="mono small">{{ ev.ts | dt }}</td>
+        <td>{{ ev.event_type | label }}</td>
+        <td class="mono small">{{ ev.old_value or '—' }} → {{ ev.new_value or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted small">Событий нет.</p>
+    {% endif %}
+    <p class="small"><a href="/journal?q={{ task.task_id }}">искать номер задания в журнале →</a></p>
+  </div>
+</div>
+{% endblock %}

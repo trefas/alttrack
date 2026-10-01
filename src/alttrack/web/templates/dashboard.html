@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}alttrack — панель{% endblock %}
+{% block content %}
+<h1>Панель</h1>
+
+{% if refresh_initial and not packages %}
+<div class="card" style="border-color:#93c5fd; background:#eff6ff">
+  <h2 style="margin-bottom:6px">Добро пожаловать</h2>
+  <p class="muted" style="margin-top:0">База пуста — ни один пакет пока не отслеживается.</p>
+  <p>Добавьте первый пакет, чтобы начать отслеживать его жизненный цикл в репозиториях Альт Линукс:</p>
+  <p><a class="btn" href="/packages/new">Добавить пакет</a></p>
+  <p class="small muted">Или из терминала: <code>alttrack watch add &lt;имя&gt;</code></p>
+</div>
+{% endif %}
+
+<div class="grid cols-4">
+  <div class="card stat"><div class="value">{{ packages | length }}</div><div class="caption">отслеживаемых пакетов</div></div>
+  <div class="card stat"><div class="value">{{ counters.total }}</div><div class="caption">событий в журнале</div></div>
+  <div class="card stat"><div class="value {{ 'bad' if task_counters.failed }}">{{ task_counters.active }}</div><div class="caption">идёт сборок</div></div>
+  <div class="card stat"><div class="value {{ 'bad' if task_counters.failed }}">{{ task_counters.failed }}</div><div class="caption">сбоев сборки</div></div>
+</div>
+
+{% if not packages %}
+<div class="empty">Список отслеживаемых пакетов пуст. <a href="/packages/new">Добавить первый пакет</a></div>
+{% endif %}
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h2>Идёт сборка <span class="muted small">({{ active_tasks | length }})</span></h2>
+    {% if active_tasks %}
+    <table class="compact">
+      <tr><th>Задание</th><th>Ветка</th><th>Состояние</th><th>Этап</th></tr>
+      {% for t in active_tasks %}
+      <tr>
+        <td><a href="/tasks/{{ t.task_id }}">{{ t.task_id }}</a></td>
+        <td>{{ t.branch }}</td>
+        <td><span class="pill pill-warn">{{ t.state }}</span></td>
+        <td class="small muted">{{ t.stage or '—' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="small"><a href="/tasks?state=active">все идущие задания →</a></p>
+    {% else %}
+    <p class="muted small">Нет активных сборок.</p>
+    {% endif %}
+
+    <h2>Сбои сборок</h2>
+    {% if failed %}
+    <table class="compact">
+      {% for ev in failed %}
+      <tr>
+        <td class="mono">{{ ev.ts | dt }}</td>
+        <td>{{ ev.package }} / {{ ev.branch }}</td>
+        <td><span class="pill pill-bad">{{ ev.new_value }}</span></td>
+        <td><a href="/tasks/{{ ev.detail.get('task_id') }}">задание</a></td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <p class="muted small">Сбоев не зафиксировано.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Последние события <span class="muted small">({{ total }})</span></h2>
+    {% if recent %}
+    <table class="compact">
+      <tr><th>Время</th><th>Пакет</th><th>Событие</th></tr>
+      {% for ev in recent %}
+      <tr>
+        <td class="mono small">{{ ev.ts | dt }}</td>
+        <td>{{ ev.package }}{% if ev.branch %} <span class="tag">{{ ev.branch }}</span>{% endif %}</td>
+        <td class="small">
+          <strong>{{ ev.event_type | label }}</strong>
+          {% if ev.old_value or ev.new_value %}
+          <br><span class="muted">{{ ev.old_value or '—' }} → {{ ev.new_value or '—' }}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    <p class="small"><a href="/journal">весь журнал →</a></p>
+    {% else %}
+    <p class="muted small">Событий пока нет.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Прогоны освежения</h2>
+  {% if runs %}
+  <table class="compact">
+    <tr><th>#</th><th>Начато</th><th>Статус</th><th>Пакетов</th><th>Событий</th><th>Сообщение</th></tr>
+    {% for r in runs %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td class="mono small">{{ r.started_at | dt }}</td>
+      <td><span class="pill {{ 'pill-ok' if r.status == 'ok' else 'pill-warn' if r.status == 'partial' else 'pill-bad' }}">{{ r.status }}</span></td>
+      <td>{{ r.checked }}</td>
+      <td>{{ r.events }}</td>
+      <td class="small muted">{{ r.message[:80] }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  <p class="small"><a href="/runs">история прогонов →</a></p>
+  {% else %}
+  <p class="muted small">Прогонов ещё не было.</p>
+  {% endif %}
+</div>
+{% endblock %}

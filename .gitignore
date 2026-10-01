@@ -1,0 +1,62 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Упаковка / сборка ---
+build/
+dist/
+sdist/
+wheels/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# --- Виртуальные окружения ---
+.venv/
+venv/
+env/
+ENV/
+.env/
+.env
+.env.*
+!.env.example
+
+# --- Тесты, линтеры, типизация, покрытие ---
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.tox/
+.nox/
+junit*.xml
+
+# --- Локальные данные приложения ---
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+data/
+
+# --- Окружение / секреты ---
+*.log
+secrets.*
+credentials.json
+
+# --- IDE / редакторы ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# --- ОС ---
+.DS_Store
+Thumbs.db

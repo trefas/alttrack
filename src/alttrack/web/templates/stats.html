@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Статистика — alttrack{% endblock %}
+{% block content %}
+<h1>Статистика журнала</h1>
+
+<form method="get" action="/stats" class="filters">
+  <div class="field">
+    <label>Хранилище</label>
+    <select name="scope">
+      {% for s in ['all', 'live', 'archive'] %}
+      <option value="{{ s }}" {{ 'selected' if scope == s }}>
+        {{ {'all': 'журнал + архив', 'live': 'только журнал', 'archive': 'только архив'}[s] }}
+      </option>
+      {% endfor %}
+    </select>
+  </div>
+  <button class="btn" type="submit">Показать</button>
+</form>
+
+<div class="grid cols-4">
+  <div class="card stat"><div class="value">{{ data.total }}</div><div class="caption">всего событий</div></div>
+  <div class="card stat"><div class="value">{{ data.live }}</div><div class="caption">в живом журнале</div></div>
+  <div class="card stat"><div class="value">{{ data.archive }}</div><div class="caption">в архиве</div></div>
+  <div class="card stat"><div class="value small" style="font-size:15px">
+      {{ data.oldest | dt if data.oldest else '—' }}</div><div class="caption">самое раннее событие</div>
+  </div>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h2>По типам событий</h2>
+    <table class="compact">
+      <tr><th>Тип</th><th>Описание</th><th style="text-align:right">Н</th></tr>
+      {% for type, count in data.by_type.items() %}
+      <tr>
+        <td><a href="/journal?event_type={{ type }}&scope={{ scope }}"><code>{{ type }}</code></a></td>
+        <td class="small">{{ event_labels.get(type, '') }}</td>
+        <td style="text-align:right"><strong>{{ count }}</strong></td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>По веткам</h2>
+    <table class="compact">
+      <tr><th>Ветка</th><th style="text-align:right">Н</th></tr>
+      {% for branch, count in data.by_branch.items() %}
+      <tr><td><a href="/journal?branch={{ branch }}&scope={{ scope }}">{{ branch }}</a></td>
+          <td style="text-align:right">{{ count }}</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>По пакетам</h2>
+  <table class="compact">
+    <tr><th>Пакет</th><th style="text-align:right">Н</th></tr>
+    {% for name, count in data.by_package.items() %}
+    <tr><td><a href="/journal?package={{ name }}&scope={{ scope }}">{{ name }}</a></td>
+        <td style="text-align:right">{{ count }}</td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endblock %}

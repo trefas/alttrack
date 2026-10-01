@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}Архив — alttrack{% endblock %}
+{% block content %}
+<h1>Архивация журнала</h1>
+
+{% if result %}
+<div class="success">
+  {% if result.dry_run %}Пробный запуск: {% endif %}{{ result.message }}
+</div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Текущее состояние</h2>
+    <table class="compact">
+      <tr><td>Событий в живом журнале</td><td class="mono"><strong>{{ live }}</strong></td></tr>
+      <tr><td>Событий в архиве</td><td class="mono"><strong>{{ stored }}</strong></td></tr>
+      <tr><td>Попадут под архивацию сейчас</td><td class="mono"><strong>{{ preview }}</strong></td></tr>
+      <tr><td>Правило возраста</td><td class="mono">{{ cfg.archive_after_days }} дней</td></tr>
+      <tr><td>Лимит живого журнала</td><td class="mono">{{ cfg.max_live_rows }} строк</td></tr>
+      <tr><td>Автоархивация при прогоне</td><td>{{ 'включена' if cfg.auto_archive else 'выключена' }}</td></tr>
+    </table>
+    <p class="small muted">
+      Архивация переносит старые события в отдельную таблицу — живой журнал остаётся быстрым,
+      а поиск идёт по обоим хранилищам.
+    </p>
+    <p class="small"><a href="/journal?scope=all">Искать по журналу и архиву →</a></p>
+  </div>
+
+  <div class="card">
+    <h2>Архивировать вручную</h2>
+    <form method="post" action="/archive/run" class="stack">
+      <label>Возраст (дни)</label>
+      <input type="number" name="older_than" min="1" placeholder="{{ cfg.archive_after_days }}">
+      <div class="hint">Перенести события старше указанного возраста. Пусто — по правилу из настроек.</div>
+
+      <label>Лимит живого журнала (строк)</label>
+      <input type="number" name="max_rows" min="100" placeholder="{{ cfg.max_live_rows }}">
+      <div class="hint">Если живых событий больше — самые старые будут перенесены в архив.</div>
+
+      <label>Только пакет</label>
+      <input type="text" name="package" placeholder="firefox (необязательно)">
+
+      <div class="inline-form" style="margin-top:14px">
+        <label class="checkbox-line" style="margin:0">
+          <input type="checkbox" name="dry_run" value="1"> пробный запуск (без переноса)
+        </label>
+      </div>
+      <div class="inline-form" style="margin-top:10px">
+        <button class="btn" type="submit">Архивировать</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Очистка архива</h2>
+  <form method="post" action="/archive/purge" class="inline-form"
+        onsubmit="return confirm('Удалить записи архива? Это необратимо.');">
+    <div class="field"><label>Удалить архив старше (дней)</label>
+      <input type="number" name="older_than" min="1" placeholder="весь архив">
+    </div>
+    <button class="btn btn-danger" type="submit">Удалить</button>
+  </form>
+  <p class="hint">Пустое поле — удалить весь архив. Живой журнал не затрагивается.</p>
+</div>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Прогоны — alttrack{% endblock %}
+{% block content %}
+<h1>История прогонов освежения</h1>
+
+{% if rows %}
+<table>
+  <tr><th>#</th><th>Начато</th><th>Завершено</th><th>Статус</th><th>Пакетов</th><th>Событий</th><th>Сообщение</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td class="mono">{{ r.id }}</td>
+    <td class="mono small">{{ r.started_at | dt }}</td>
+    <td class="mono small">{{ r.finished_at | dt }}</td>
+    <td><span class="pill {{ 'pill-ok' if r.status == 'ok' else 'pill-warn' if r.status == 'partial' else 'pill-bad' }}">{{ r.status }}</span></td>
+    <td>{{ r.checked }}</td>
+    <td>{{ r.events }}</td>
+    <td class="small muted">{{ r.message }}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">Прогонов ещё не было. Нажмите «Обновить сейчас» или запустите <code>alttrack refresh</code>.</div>
+{% endif %}
+{% endblock %}

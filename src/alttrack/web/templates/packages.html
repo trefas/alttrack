@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Пакеты — alttrack{% endblock %}
+{% block content %}
+<h1>Отслеживаемые пакеты <span class="muted small">({{ packages | length }})</span></h1>
+
+<div class="inline-form" style="margin-bottom:14px">
+  <form method="get" action="/packages" class="inline-form">
+    <div class="field"><label>Поиск</label>
+      <input type="text" name="q" value="{{ q or '' }}" placeholder="имя пакета">
+    </div>
+    <button class="btn btn-secondary" type="submit">Найти</button>
+  </form>
+  <a class="btn" href="/packages/new" style="margin-left:auto">+ Добавить пакет</a>
+</div>
+
+{% if packages %}
+<table>
+  <tr>
+    <th>ID</th><th>Пакет</th><th>Ветки</th><th>Наличие</th><th>Статус</th><th>Проверен</th><th>Заметка</th><th></th>
+  </tr>
+  {% for p in packages %}
+  <tr>
+    <td class="muted">{{ p.id }}</td>
+    <td><a href="/packages/{{ p.id }}"><strong>{{ p.name }}</strong></a></td>
+    <td class="small">{{ p.branches | join(', ') }}</td>
+    <td class="small">{{ states[p.id].present }} / {{ states[p.id].total }}</td>
+    <td>
+      {% if p.enabled %}<span class="pill pill-ok">вкл</span>
+      {% else %}<span class="pill pill-warn">пауза</span>{% endif %}
+    </td>
+    <td class="mono small">{{ p.last_checked_at | dt }}</td>
+    <td class="small muted">{{ p.note }}</td>
+    <td class="small"><a href="/packages/{{ p.id }}/edit">изменить</a></td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">
+  {% if q %}Ничего не найдено по запросу «{{ q }}».{% else %}Список пуст.{% endif %}
+  <a href="/packages/new">Добавить пакет</a>
+</div>
+{% endif %}
+{% endblock %}

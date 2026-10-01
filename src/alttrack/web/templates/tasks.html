@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Сборочные задания — alttrack{% endblock %}
+{% block content %}
+<h1>Сборочные задания <span class="muted small">({{ total }})</span></h1>
+
+<div class="grid cols-4" style="margin-bottom:16px">
+  <div class="card stat"><div class="value">{{ counters.active }}</div><div class="caption">идут сейчас</div></div>
+  <div class="card stat"><div class="value ok">{{ counters.done }}</div><div class="caption">завершено успешно</div></div>
+  <div class="card stat"><div class="value {{ 'bad' if counters.failed }}">{{ counters.failed }}</div><div class="caption">сбоев</div></div>
+  <div class="card stat"><div class="value">{{ counters.total }}</div><div class="caption">всего в БД</div></div>
+</div>
+
+<form method="get" action="/tasks" class="filters">
+  <div class="field">
+    <label>Пакет</label>
+    <select name="package">
+      <option value="">все</option>
+      {% for p in packages %}
+      <option value="{{ p.name }}" {{ 'selected' if filters.package == p.name }}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label>Ветка</label>
+    <input type="text" name="branch" value="{{ filters.branch }}" placeholder="sisyphus">
+  </div>
+  <div class="field">
+    <label>Состояние</label>
+    <select name="state">
+      <option value="">все</option>
+      <option value="active" {{ 'selected' if filters.state == 'active' }}>идущие</option>
+      <option value="done" {{ 'selected' if filters.state == 'done' }}>завершённые</option>
+      <option value="failed" {{ 'selected' if filters.state == 'failed' }}>только сбои</option>
+    </select>
+  </div>
+  <button class="btn" type="submit">Применить</button>
+  <a class="btn btn-secondary" href="/tasks">Сбросить</a>
+</form>
+
+{% if rows %}
+<table>
+  <tr><th>Задание</th><th>Ветка</th><th>Пакеты</th><th>Состояние</th><th>Этап</th><th>Попытка</th><th>Владелец</th><th>Обновлено</th></tr>
+  {% for t in rows %}
+  <tr>
+    <td class="mono"><a href="/tasks/{{ t.task_id }}?branch={{ t.branch }}">{{ t.task_id }}</a></td>
+    <td>{{ t.branch }}</td>
+    <td class="small">{{ t.packages or '' }}</td>
+    <td>
+      {% if t.state in ('FAILED', 'EPERM') %}<span class="pill pill-bad">{{ t.state }}</span>
+      {% elif t.state == 'DONE' %}<span class="pill pill-ok">{{ t.state }}</span>
+      {% elif t.terminal %}<span class="pill">{{ t.state }}</span>
+      {% else %}<span class="pill pill-warn">{{ t.state }}</span>{% endif %}
+    </td>
+    <td class="small muted">{{ t.stage or '—' }}</td>
+    <td>{{ t.try_no or '—' }}</td>
+    <td class="small">{{ t.owner or '—' }}</td>
+    <td class="mono small">{{ t.last_seen_at | dt }}</td>
+  </tr>
+  {% endfor %}
+</table>
+
+<div class="pager">
+  {% if page > 1 %}<a class="btn btn-secondary btn-small" href="?page={{ page - 1 }}&package={{ filters.package }}&branch={{ filters.branch }}&state={{ filters.state }}">← назад</a>{% endif %}
+  <span>страница {{ page }} из {{ pages }}</span>
+  {% if page < pages %}<a class="btn btn-secondary btn-small" href="?page={{ page + 1 }}&package={{ filters.package }}&branch={{ filters.branch }}&state={{ filters.state }}">вперёд →</a>{% endif %}
+</div>
+{% else %}
+<div class="empty">Заданий не найдено. Они появятся после первого освежения с включённым отслеживанием сборок.</div>
+{% endif %}
+{% endblock %}
