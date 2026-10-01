@@ -16,13 +16,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from anyio import to_thread
 
-from .. import archive, journal, refresh, tasks, watchlist
+from .. import archive, compare, images, journal, lists, metasync, products, refs, refresh, tasks, watchlist
 from ..api import ALTRepoClient, ApiError, PackageNotFound
 from ..config import Config, write_toml
 from ..db import open_db
@@ -67,13 +67,16 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
     templates.env.filters["dt"] = _fmt_dt
     templates.env.filters["label"] = lambda t: EVENT_LABELS.get(t, t)
 
-    app = FastAPI(title="alttrack", docs_url=None, redoc_url=None, openapi_url=None)
+    app = FastAPI(title="AltTrack", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.cfg = cfg
     app.state.refresh_status: dict[str, Any] = {
         "running": False,
         "last": None,
         "initial": True,
     }
+    # Background jobs (mass add / diff update): name -> status dict, the same
+    # pattern as refresh_status; the UI polls /api/jobs.
+    app.state.jobs: dict[str, dict[str, Any]] = {}
 
     @contextlib.asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -133,14 +136,109 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         }
         return result
 
+    def _job(name: str) -> dict[str, Any]:
+        return app.state.jobs.setdefault(
+            name,
+            {"running": False, "stage": "", "error": None, "last": None, "finished_at": None},
+        )
+
+    def run_job(name: str, fn: Any) -> bool:
+        """Run ``fn(conn, client, progress)`` in a background thread.
+
+        Returns False when a job with this name is already running.
+        """
+        job = _job(name)
+        if job["running"]:
+            return False
+        job.update(running=True, stage="запуск…", error=None)
+
+        def _run() -> None:
+            conn = open_db(cfg.db_path)
+            client = getattr(app.state, "shared_client", None)
+            owned = client is None
+            if owned:
+                client = ALTRepoClient(
+                    cfg.api_base_url, timeout=cfg.http_timeout, concurrency=cfg.http_concurrency
+                )
+            try:
+                job["last"] = fn(conn, client, lambda stage: job.update(stage=stage))
+                job["finished_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            except Exception as exc:  # noqa: BLE001
+                log.exception("background job %s failed", name)
+                job["error"] = str(exc)
+            finally:
+                if owned:
+                    client.close()
+                conn.close()
+                job.update(running=False, stage="")
+
+        threading.Thread(target=_run, daemon=True, name=f"job-{name}").start()
+        return True
+
+    def current_product(conn: Any, request: Request) -> Optional[products.Product]:
+        """Product selected in the header (cookie); a single-product install
+        defaults to its only product."""
+        all_products = products.list_products(conn)
+        raw = request.cookies.get("product_id")
+        if raw == "0":
+            return None
+        if raw and raw.isdigit():
+            for p in all_products:
+                if str(p.id) == raw:
+                    return p
+        if len(all_products) == 1:
+            return all_products[0]
+        return None
+
+    def product_names(conn: Any, product: Optional[products.Product]) -> list[str]:
+        if product is None:
+            return []
+        return [
+            str(r["name"])
+            for r in conn.execute(
+                "SELECT t.name FROM product_packages pp "
+                "JOIN tracked_packages t ON t.id = pp.package_id "
+                "WHERE pp.product_id = ?",
+                (product.id,),
+            )
+        ]
+
+    def product_ids(conn: Any, product: Optional[products.Product]) -> list[int]:
+        if product is None:
+            return []
+        return [
+            int(r["package_id"])
+            for r in conn.execute(
+                "SELECT package_id FROM product_packages WHERE product_id = ?",
+                (product.id,),
+            )
+        ]
+
     def ctx(request: Request, **extra: Any) -> dict[str, Any]:
         status = app.state.refresh_status
+        conn = open_db(cfg.db_path)
+        try:
+            all_products = products.list_products(conn)
+            product = current_product(conn, request)
+        finally:
+            conn.close()
+        jobs = [j for j in app.state.jobs.values() if j.get("running")]
+        last_job = None
+        for j in app.state.jobs.values():
+            if j.get("finished_at") and not j.get("running"):
+                if last_job is None or str(j["finished_at"]) > str(last_job["finished_at"]):
+                    last_job = j
         return {
             "request": request,
             "cfg": cfg,
             "refresh_running": status["running"],
             "refresh_initial": status["initial"],
             "refresh_last": status["last"],
+            "products": all_products,
+            "current_product": product,
+            "job_running": bool(jobs),
+            "job_stage": jobs[0]["stage"] if jobs else "",
+            "last_job": last_job,
             **extra,
         }
 
@@ -180,14 +278,24 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
     # ------------------------------------------------------------------
     @app.get("/", response_class=HTMLResponse)
     def dashboard(request: Request, conn=Depends(get_conn)) -> Any:
+        product = current_product(conn, request)
+        names = product_names(conn, product)
         packages = watchlist.list_packages(conn)
-        recent, total = journal.query_events(conn, scope="all", limit=15)
+        recent, total = journal.query_events(
+            conn, scope="all", limit=15, packages=names or None
+        )
         counters = journal.stats(conn, scope="all")
         task_counters = tasks.task_counters(conn)
         failed, _ = journal.query_events(
-            conn, event_types=sorted(TASK_EVENT_TYPES & {"task_failed"}), scope="all", limit=5
+            conn,
+            event_types=sorted(TASK_EVENT_TYPES & {"task_failed"}),
+            scope="all",
+            limit=5,
+            packages=names or None,
         )
-        active_tasks, _ = tasks.list_tasks(conn, active=True, limit=8)
+        active_tasks, _ = tasks.list_tasks(
+            conn, active=True, limit=8, package_ids=product_ids(conn, product) or None
+        )
         runs = refresh.list_runs(conn, limit=5)
         return templates.TemplateResponse(
             request,
@@ -292,6 +400,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         events, total = journal.query_events(conn, package=pkg.name, scope="all", limit=30)
         pkg_tasks, tasks_total = tasks.list_tasks(conn, package=pkg.name, limit=15)
         present_report = None
+        backfill_job = app.state.jobs.get(f"backfill:{pkg.id}")
         return templates.TemplateResponse(
             request,
             "package_detail.html",
@@ -305,6 +414,9 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 pkg_tasks=pkg_tasks,
                 tasks_total=tasks_total,
                 present_report=present_report,
+                backfill_limit=cfg.backfill_limit,
+                backfill_job=backfill_job,
+                busy=request.query_params.get("busy"),
                 created=request.query_params.get("created"),
             ),
         )
@@ -402,10 +514,12 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
             until = until + "T23:59:59"
         limit = 50
         offset = max(page - 1, 0) * limit
+        product = current_product(conn, request)
         events, total = journal.query_events(
             conn,
             q=q,
             package=package,
+            packages=product_names(conn, product) or None,
             branch=branch,
             event_types=event_type,
             since=since,
@@ -546,6 +660,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         rows, total = tasks.list_tasks(
             conn,
             package=package,
+            package_ids=product_ids(conn, current_product(conn, request)) or None,
             branch=branch,
             active=active,
             outcome=outcome,
@@ -578,6 +693,623 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         return templates.TemplateResponse(request, "task_detail.html", ctx(request, task=data))
 
     # ------------------------------------------------------------------
+    # products
+    # ------------------------------------------------------------------
+    @app.get("/products", response_class=HTMLResponse)
+    def products_page(request: Request, conn=Depends(get_conn)) -> Any:
+        cards = []
+        for p in products.list_products(conn):
+            cards.append(
+                {
+                    "product": p,
+                    "counts": products.product_counts(conn, p),
+                    "images": len(products.product_images(conn, p)),
+                    "comparisons": len(compare.list_comparisons(conn, product_id=p.id)),
+                }
+            )
+        return templates.TemplateResponse(
+            request,
+            "products.html",
+            ctx(
+                request,
+                cards=cards,
+                arch_list=refs.branch_arch_options(conn),
+                error=request.query_params.get("error"),
+            ),
+        )
+
+    @app.post("/products")
+    def product_create_route(
+        title: str = Form(...),
+        branch: str = Form(...),
+        edition: str = Form(""),
+        arch: str = Form("x86_64"),
+        conn=Depends(get_conn),
+    ) -> Any:
+        from urllib.parse import quote
+
+        try:
+            p = products.create_product(
+                conn, title=title, branch=branch, edition=edition.strip(), arch=arch.strip()
+            )
+        except ValueError as exc:
+            return RedirectResponse(f"/products?error={quote(str(exc))}", status_code=303)
+        return RedirectResponse(f"/products/{p.id}", status_code=303)
+
+    @app.post("/products/select")
+    def product_select(product_id: str = Form(""), referer: str = Form("")) -> Any:
+        target = referer if referer.startswith("/") else "/"
+        resp = RedirectResponse(target, status_code=303)
+        resp.set_cookie("product_id", product_id, max_age=60 * 60 * 24 * 365, samesite="lax")
+        return resp
+
+    @app.get("/products/{product_id}", response_class=HTMLResponse)
+    def product_detail(
+        request: Request,
+        product_id: int,
+        q: Optional[str] = None,
+        state: Optional[str] = None,
+        preview: Optional[str] = None,
+        busy: Optional[str] = None,
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        p = products.get_product(conn, product_id)
+        if p is None:
+            raise HTTPException(404, "продукт не найден")
+
+        # Membership table (filtered, capped for page size).
+        where = ["pp.product_id = ?"]
+        args: list[Any] = [p.id]
+        if q:
+            where.append("t.name LIKE ?")
+            args.append(f"%{q}%")
+        if state == "active":
+            where.append("pp.paused_by_image = 0 AND t.enabled = 1")
+        elif state == "paused":
+            where.append("(pp.paused_by_image = 1 OR t.enabled = 0)")
+        members = [
+            dict(r)
+            for r in conn.execute(
+                "SELECT t.id, t.name, t.branches, t.enabled, t.note, t.watch_errata, "
+                "t.watch_maintainer, t.watch_tasks, t.last_checked_at, "
+                "pp.added_by, pp.paused_by_image "
+                "FROM product_packages pp JOIN tracked_packages t ON t.id = pp.package_id "
+                f"WHERE {' AND '.join(where)} ORDER BY t.name COLLATE NOCASE LIMIT 300",
+                args,
+            )
+        ]
+        for m in members:
+            try:
+                m["branch_list"] = json.loads(m["branches"] or "[]")
+            except (TypeError, ValueError):
+                m["branch_list"] = []
+        total_members = products.product_counts(conn, p)
+
+        if images.catalog_is_empty(conn):
+            with contextlib.suppress(ApiError):
+                images.refresh_catalog(conn, client)
+        catalog_rows = images.catalog(
+            conn,
+            branch=p.branch,
+            edition=p.edition or None,
+            arch=p.arch or None,
+            limit=40,
+        )
+
+        preview_report = None
+        preview_error = None
+        if preview:
+            try:
+                preview_report = products.preview_from_image(conn, client, p, preview)
+            except ApiError as exc:
+                preview_error = str(exc)
+
+        job_report = None
+        for key in (f"track:{p.id}", f"update:{p.id}", f"meta:{p.id}"):
+            job = app.state.jobs.get(key)
+            if job and (job.get("last") is not None or job.get("error")):
+                job_report = {"name": key, **job}
+                break
+
+        return templates.TemplateResponse(
+            request,
+            "product_detail.html",
+            ctx(
+                request,
+                p=p,
+                members=members,
+                counts=total_members,
+                product_images=products.product_images(conn, p),
+                comparisons=compare.list_comparisons(conn, product_id=p.id),
+                catalog=catalog_rows,
+                q=q or "",
+                state=state or "",
+                preview=preview_report,
+                preview_error=preview_error,
+                preview_uuid=preview or "",
+                job_report=job_report,
+                busy=bool(busy),
+                backfill_limit=cfg.backfill_limit,
+            ),
+        )
+
+    @app.post("/products/{product_id}/delete")
+    def product_delete(product_id: int, conn=Depends(get_conn)) -> Any:
+        p = products.get_product(conn, product_id)
+        if p is None:
+            raise HTTPException(404, "продукт не найден")
+        products.delete_product(conn, p)
+        resp = RedirectResponse("/products", status_code=303)
+        resp.delete_cookie("product_id")
+        return resp
+
+    @app.post("/products/{product_id}/track")
+    def product_track(
+        product_id: int,
+        uuid: str = Form(...),
+        errata: Optional[str] = Form(None),
+        maintainer: Optional[str] = Form(None),
+        tasks_watch: Optional[str] = Form(None),
+        conn=Depends(get_conn),
+    ) -> Any:
+        p = products.get_product(conn, product_id)
+        if p is None:
+            raise HTTPException(404, "продукт не найден")
+
+        def _run(conn2: Any, client: ALTRepoClient, progress: Any) -> Any:
+            return products.track_from_image(
+                conn2, client, p, uuid,
+                watch_errata=errata is not None,
+                watch_maintainer=maintainer is not None,
+                watch_tasks=tasks_watch is not None,
+                progress=progress,
+            )
+
+        started = run_job(f"track:{product_id}", _run)
+        return RedirectResponse(
+            f"/products/{product_id}" if started else f"/products/{product_id}?busy=1",
+            status_code=303,
+        )
+
+    @app.post("/products/{product_id}/update")
+    def product_update(
+        product_id: int,
+        uuid: str = Form(""),
+        latest: Optional[str] = Form(None),
+        errata: Optional[str] = Form(None),
+        maintainer: Optional[str] = Form(None),
+        tasks_watch: Optional[str] = Form(None),
+        conn=Depends(get_conn),
+    ) -> Any:
+        p = products.get_product(conn, product_id)
+        if p is None:
+            raise HTTPException(404, "продукт не найден")
+
+        def _run(conn2: Any, client: ALTRepoClient, progress: Any) -> Any:
+            use_uuid = uuid
+            if not use_uuid or latest is not None:
+                if images.catalog_is_empty(conn2):
+                    images.refresh_catalog(conn2, client)
+                row = images.latest_release_image(
+                    conn2, branch=p.branch, edition=p.edition, arch=p.arch
+                )
+                if row is None:
+                    raise ApiError(
+                        f"в каталоге нет release-образа {p.branch}/{p.edition}/{p.arch}"
+                    )
+                use_uuid = str(row["uuid"])
+            return products.update_from_image(
+                conn2, client, p, use_uuid,
+                watch_errata=errata is not None,
+                watch_maintainer=maintainer is not None,
+                watch_tasks=tasks_watch is not None,
+                progress=progress,
+            )
+
+        started = run_job(f"update:{product_id}", _run)
+        return RedirectResponse(
+            f"/products/{product_id}" if started else f"/products/{product_id}?busy=1",
+            status_code=303,
+        )
+
+    @app.post("/products/{product_id}/meta-sync")
+    def product_meta_sync(product_id: int, conn=Depends(get_conn)) -> Any:
+        p = products.get_product(conn, product_id)
+        if p is None:
+            raise HTTPException(404, "продукт не найден")
+
+        def _run(conn2: Any, client: ALTRepoClient, progress: Any) -> Any:
+            progress("загрузка справочника…")
+            return metasync.sync(conn2, client, branch=p.branch)
+
+        started = run_job(f"meta:{product_id}", _run)
+        return RedirectResponse(
+            f"/products/{product_id}" if started else f"/products/{product_id}?busy=1",
+            status_code=303,
+        )
+
+    # ------------------------------------------------------------------
+    # image catalog
+    # ------------------------------------------------------------------
+    @app.get("/images", response_class=HTMLResponse)
+    def images_page(
+        request: Request,
+        branch: Optional[str] = None,
+        edition: Optional[str] = None,
+        arch: Optional[str] = None,
+        release: Optional[str] = None,
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        error = None
+        if images.catalog_is_empty(conn):
+            try:
+                images.refresh_catalog(conn, client)
+            except ApiError as exc:
+                error = f"не удалось загрузить каталог: {exc}"
+        rows = images.catalog(
+            conn, branch=branch, edition=edition, arch=arch, release=release, limit=200
+        )
+        opts = images.filter_options(conn)
+        # Architectures come from the rdb reference list (Settings → Справочники):
+        # the catalog alone only shows arches of images that already exist.
+        opts["archs"] = refs.branch_arch_options(conn)
+        return templates.TemplateResponse(
+            request,
+            "images.html",
+            ctx(
+                request,
+                rows=rows,
+                opts=opts,
+                filters={"branch": branch or "", "edition": edition or "",
+                         "arch": arch or "", "release": release or ""},
+                error=error or request.query_params.get("error"),
+                synced=conn.execute(
+                    "SELECT MAX(synced_at) AS s FROM image_catalog"
+                ).fetchone()["s"],
+            ),
+        )
+
+    @app.post("/images/refresh")
+    def images_refresh(client=Depends(client_for_request)) -> Any:
+        from urllib.parse import quote
+
+        conn = open_db(cfg.db_path)
+        try:
+            try:
+                images.refresh_catalog(conn, client)
+            except ApiError as exc:
+                return RedirectResponse(f"/images?error={quote(str(exc))}", status_code=303)
+        finally:
+            conn.close()
+        return RedirectResponse("/images", status_code=303)
+
+    # ------------------------------------------------------------------
+    # saved lists
+    # ------------------------------------------------------------------
+    @app.get("/lists", response_class=HTMLResponse)
+    def lists_page(request: Request, conn=Depends(get_conn)) -> Any:
+        product = current_product(conn, request)
+        created = request.query_params.get("created")
+        return templates.TemplateResponse(
+            request,
+            "lists.html",
+            ctx(
+                request,
+                rows=lists.list_lists(conn),
+                product=product,
+                arch_opts=refs.branch_arch_options(conn),
+                created=int(created) if created and created.isdigit() else None,
+                error=request.query_params.get("error"),
+            ),
+        )
+
+    @app.post("/lists/file")
+    async def list_upload(
+        file: Optional[UploadFile] = File(None),
+        text: str = Form(""),
+        title: str = Form(""),
+        branch: str = Form(""),
+        product_id: str = Form(""),
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        from urllib.parse import quote
+
+        content = ""
+        name = ""
+        if file is not None and file.filename:
+            raw = await file.read()
+            content = raw.decode("utf-8", errors="replace")
+            name = file.filename
+        elif text.strip():
+            content = text
+        if not content.strip():
+            return RedirectResponse("/lists?error=пустой%20файл", status_code=303)
+
+        pid: Optional[int] = None
+        if product_id.isdigit():
+            pid = int(product_id)
+        elif product_id:
+            p = products.get_product(conn, product_id)
+            pid = p.id if p else None
+        list_obj, _report = lists.save_file_list(
+            conn,
+            text=content,
+            title=title or name,
+            product_id=pid,
+            source_branch=branch or None,
+            client=client,
+        )
+        return RedirectResponse(f"/lists?created={list_obj.id}", status_code=303)
+
+    @app.post("/lists/image")
+    def list_from_image(
+        request: Request,
+        uuid: str = Form(...),
+        title: str = Form(""),
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        from urllib.parse import quote
+
+        product = current_product(conn, request)
+        try:
+            list_obj, _r = lists.save_image_list(
+                conn, client, uuid=uuid, title=title or None,
+                product_id=product.id if product else None,
+            )
+        except ApiError as exc:
+            return RedirectResponse(f"/lists?error={quote(str(exc))}", status_code=303)
+        return RedirectResponse(f"/lists?created={list_obj.id}", status_code=303)
+
+    @app.post("/lists/branch")
+    def list_from_branch(
+        request: Request,
+        branch: str = Form(...),
+        arch: Optional[list[str]] = Form(None),
+        title: str = Form(""),
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        from urllib.parse import quote
+
+        product = current_product(conn, request)
+        selected = [a for a in (arch or []) if a]
+        try:
+            list_obj, _r = lists.save_branch_list(
+                conn, client, branch=branch, arch=selected or None,
+                title=title or None,
+                product_id=product.id if product else None,
+            )
+        except ApiError as exc:
+            return RedirectResponse(f"/lists?error={quote(str(exc))}", status_code=303)
+        return RedirectResponse(f"/lists?created={list_obj.id}", status_code=303)
+
+    @app.post("/lists/{list_id}/delete")
+    def list_delete(list_id: int, conn=Depends(get_conn)) -> Any:
+        if lists.get_list(conn, list_id) is None:
+            raise HTTPException(404, "список не найден")
+        lists.delete_list(conn, list_id)
+        return RedirectResponse("/lists", status_code=303)
+
+    # ------------------------------------------------------------------
+    # comparison
+    # ------------------------------------------------------------------
+    @app.get("/compare", response_class=HTMLResponse)
+    def compare_page(request: Request, conn=Depends(get_conn)) -> Any:
+        product = current_product(conn, request)
+        rows = lists.list_lists(conn)
+        history = compare.list_comparisons(conn)
+        pre_left = request.query_params.get("left", "")
+        pre_right = request.query_params.get("right", "")
+        return templates.TemplateResponse(
+            request,
+            "compare.html",
+            ctx(
+                request,
+                rows=rows,
+                history=history,
+                product=product,
+                status_labels=compare.STATUS_LABELS,
+                pre_left=pre_left,
+                pre_right=pre_right,
+                error=request.query_params.get("error"),
+            ),
+        )
+
+    @app.post("/compare/run")
+    def compare_run_route(
+        left: int = Form(...),
+        right: int = Form(...),
+        title: str = Form(""),
+        product_id: str = Form(""),
+        conn=Depends(get_conn),
+    ) -> Any:
+        pid: Optional[int] = int(product_id) if product_id.isdigit() else None
+        try:
+            cmp_obj = compare.save(
+                conn, left_id=left, right_id=right, title=title, product_id=pid
+            )
+        except KeyError as exc:
+            return RedirectResponse(f"/compare?error={exc}", status_code=303)
+        return RedirectResponse(f"/compare/{cmp_obj.id}", status_code=303)
+
+    @app.post("/compare/preset")
+    def compare_preset(
+        request: Request,
+        preset: str = Form(...),
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        """Built-in comparisons for the current product: last release image
+        versus the latest uploaded file list (``release-list``) or versus the
+        current repository branch (``release-branch``)."""
+        from urllib.parse import quote
+
+        product = current_product(conn, request)
+        if product is None:
+            return RedirectResponse(
+                "/compare?error=" + quote("выберите продукт в шапке"), status_code=303
+            )
+        if images.catalog_is_empty(conn):
+            try:
+                images.refresh_catalog(conn, client)
+            except ApiError as exc:
+                return RedirectResponse(
+                    f"/compare?error={quote(str(exc))}", status_code=303
+                )
+        row = images.latest_release_image(
+            conn, branch=product.branch, edition=product.edition, arch=product.arch
+        )
+        if row is None:
+            return RedirectResponse(
+                "/compare?error=" + quote("нет release-образа продукта в каталоге"),
+                status_code=303,
+            )
+        try:
+            left, _r = lists.save_image_list(
+                conn, client, uuid=str(row["uuid"]), product_id=product.id
+            )
+            if preset == "release-branch":
+                right, _r = lists.save_branch_list(
+                    conn, client, branch=product.branch, arch=product.arch or None,
+                    product_id=product.id,
+                )
+            else:
+                file_lists = [l for l in lists.list_lists(conn) if l.kind == "file"]
+                if not file_lists:
+                    return RedirectResponse(
+                        "/compare?error=" + quote("нет загруженных списков (сначала загрузите файл)"),
+                        status_code=303,
+                    )
+                right = file_lists[0]
+        except ApiError as exc:
+            return RedirectResponse(f"/compare?error={quote(str(exc))}", status_code=303)
+        cmp_obj = compare.save(
+            conn, left_id=left.id, right_id=right.id, product_id=product.id
+        )
+        return RedirectResponse(f"/compare/{cmp_obj.id}", status_code=303)
+
+    @app.get("/compare/{cmp_id}", response_class=HTMLResponse)
+    def compare_detail(
+        request: Request,
+        cmp_id: int,
+        status: Optional[str] = None,
+        csv: Optional[str] = None,
+        conn=Depends(get_conn),
+    ) -> Any:
+        cmp_obj = compare.get_comparison(conn, cmp_id)
+        if cmp_obj is None:
+            raise HTTPException(404, "сравнение не найдено")
+        if status and status not in compare.STATUSES:
+            status = None
+        result = compare.report(conn, cmp_obj)
+        rows = result["rows"]
+        if status:
+            rows = [r for r in rows if r["status"] == status]
+        rows = rows[:1000]
+        left_list = lists.get_list(conn, cmp_obj.left_list_id)
+        right_list = lists.get_list(conn, cmp_obj.right_list_id)
+        return templates.TemplateResponse(
+            request,
+            "compare_detail.html",
+            ctx(
+                request,
+                cmp=cmp_obj,
+                rows=rows,
+                stats=result["stats"],
+                total=result["total"],
+                shown=len(rows),
+                status=status or "",
+                status_labels=compare.STATUS_LABELS,
+                statuses=compare.STATUSES,
+                left_list=left_list,
+                right_list=right_list,
+                product=products.get_product(conn, cmp_obj.product_id)
+                if cmp_obj.product_id
+                else None,
+            ),
+        )
+
+    @app.get("/compare/{cmp_id}/export")
+    def compare_export(
+        cmp_id: int,
+        status: Optional[str] = None,
+        conn=Depends(get_conn),
+    ) -> Any:
+        cmp_obj = compare.get_comparison(conn, cmp_id)
+        if cmp_obj is None:
+            raise HTTPException(404, "сравнение не найдено")
+        result = compare.report(conn, cmp_obj)
+        payload = compare.to_csv(result["rows"], status=status or None)
+        from fastapi.responses import Response
+
+        return Response(
+            content=payload,
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": f"attachment; filename=alttrack-compare-{cmp_id}.csv"
+            },
+        )
+
+    @app.post("/compare/{cmp_id}/delete")
+    def compare_delete(cmp_id: int, conn=Depends(get_conn)) -> Any:
+        if compare.get_comparison(conn, cmp_id) is None:
+            raise HTTPException(404, "сравнение не найдено")
+        compare.delete_comparison(conn, cmp_id)
+        return RedirectResponse("/compare", status_code=303)
+
+    # ------------------------------------------------------------------
+    # per-package backfill + job status
+    # ------------------------------------------------------------------
+    @app.post("/packages/{package_id}/backfill")
+    def package_backfill(package_id: int, conn=Depends(get_conn)) -> Any:
+        pkg = watchlist.get_package(conn, package_id)
+        if pkg is None:
+            raise HTTPException(404, "пакет не найден")
+
+        def _run(conn2: Any, client: ALTRepoClient, progress: Any) -> Any:
+            progress("импорт истории сборок…")
+            added = refresh.backfill_build_history(
+                conn2, client, pkg.id, pkg.name, pkg.branches, cfg.backfill_limit
+            )
+            return {"package": pkg.name, "imported": added, "limit": cfg.backfill_limit}
+
+        started = run_job(f"backfill:{package_id}", _run)
+        return RedirectResponse(
+            f"/packages/{package_id}" if started else f"/packages/{package_id}?busy=1",
+            status_code=303,
+        )
+
+    @app.get("/api/jobs")
+    def jobs_status() -> Any:
+        out: dict[str, Any] = {}
+        for name, job in app.state.jobs.items():
+            last = job.get("last")
+            summary = None
+            if isinstance(last, dict):
+                summary = {
+                    k: (len(v) if isinstance(v, list) else v)
+                    for k, v in last.items()
+                    if k in (
+                        "image_uuid", "binaries", "srpms", "added", "linked",
+                        "branch_updated", "reactivated", "kept", "paused",
+                        "existing", "not_found", "updated", "count", "branch",
+                        "synced_at", "package", "imported", "limit",
+                    )
+                }
+            out[name] = {
+                "running": job.get("running", False),
+                "stage": job.get("stage", ""),
+                "error": job.get("error"),
+                "finished_at": job.get("finished_at"),
+                "summary": summary,
+            }
+        return JSONResponse(out)
+
+    # ------------------------------------------------------------------
     # runs / settings / manual refresh
     # ------------------------------------------------------------------
     @app.get("/runs", response_class=HTMLResponse)
@@ -588,11 +1320,46 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         )
 
     @app.get("/settings", response_class=HTMLResponse)
-    def settings_page(request: Request) -> Any:
+    def settings_page(
+        request: Request,
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        # First visit fills the reference lists (architectures, groups) once.
+        refs_error = None
+        if not conn.execute("SELECT 1 FROM reference_lists LIMIT 1").fetchone():
+            try:
+                refs.ensure(conn, client)
+            except ApiError as exc:
+                refs_error = str(exc)
         return templates.TemplateResponse(
             request,
-            "settings.html", ctx(request, saved=request.query_params.get("saved"))
+            "settings.html",
+            ctx(
+                request,
+                saved=request.query_params.get("saved"),
+                refs=refs.status(conn),
+                arch_list=refs.architectures(conn),
+                category_list=refs.categories(conn),
+                refs_saved=bool(request.query_params.get("refs")),
+                refs_error=refs_error or request.query_params.get("refs_error"),
+            ),
         )
+
+    @app.post("/settings/refs/sync")
+    def settings_refs_sync(
+        conn=Depends(get_conn),
+        client=Depends(client_for_request),
+    ) -> Any:
+        from urllib.parse import quote
+
+        try:
+            refs.sync(conn, client)
+        except ApiError as exc:
+            return RedirectResponse(
+                f"/settings?refs_error={quote(str(exc))}", status_code=303
+            )
+        return RedirectResponse("/settings?refs=1", status_code=303)
 
     @app.post("/settings")
     def settings_save(

@@ -116,6 +116,7 @@ def query_events(
     *,
     package: str | None = None,
     package_id: int | None = None,
+    packages: Sequence[str] | None = None,
     branch: str | None = None,
     event_types: Sequence[str] | None = None,
     since: str | None = None,
@@ -136,6 +137,15 @@ def query_events(
     if package_id is not None:
         where.append("package_id = ?")
         args.append(package_id)
+    if packages:
+        # Product filter: one condition per chunk (SQLite parameter limit).
+        names = [str(p) for p in dict.fromkeys(packages)]
+        clauses: list[str] = []
+        for start in range(0, len(names), 900):
+            chunk = names[start:start + 900]
+            clauses.append(f"package IN ({','.join('?' for _ in chunk)})")
+            args.extend(chunk)
+        where.append("(" + " OR ".join(clauses) + ")")
     if branch:
         where.append("branch = ?")
         args.append(branch)

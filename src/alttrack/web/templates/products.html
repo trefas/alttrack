@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Продукты — AltTrack{% endblock %}
+{% block content %}
+<h1>Продукты <span class="muted small">({{ cards | length }})</span></h1>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Продукты</h2>
+    {% if cards %}
+    <table>
+      <tr><th>Продукт</th><th>Ветка</th><th>Edition</th><th>Арх.</th><th>Пакетов</th><th>Образы</th><th>Сравнения</th></tr>
+      {% for c in cards %}
+      <tr>
+        <td><a href="/products/{{ c.product.id }}"><strong>{{ c.product.title }}</strong></a></td>
+        <td>{{ c.product.branch }}</td>
+        <td>{{ c.product.edition or '—' }}</td>
+        <td>{{ c.product.arch }}</td>
+        <td>
+          {{ c.counts.active }}
+          {% if c.counts.paused %}<span class="pill pill-warn">+{{ c.counts.paused }} пауза</span>{% endif %}
+        </td>
+        <td>{{ c.images }}</td>
+        <td>{{ c.comparisons }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}
+    <div class="empty">Продуктов нет. Создайте продукт — он объединяет образы дистрибутива,
+      отслеживаемый состав и сравнения.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Новый продукт</h2>
+    <form method="post" action="/products" class="stack">
+      <label>Название</label>
+      <input type="text" name="title" required placeholder="Образование 11">
+      <label>Ветка</label>
+      <select name="branch" required>
+        <option value="p11">p11</option>
+        <option value="p10">p10</option>
+        <option value="sisyphus">sisyphus</option>
+        <option value="p9">p9</option>
+        <option value="p8">p8</option>
+      </select>
+      <label>Edition образа</label>
+      <input type="text" name="edition" list="edition-list" placeholder="alt-education, alt-server…">
+      <datalist id="edition-list">
+        <option value="alt-education"><option value="alt-workstation"><option value="alt-server">
+        <option value="alt-kworkstation"><option value="cloud"><option value="slinux">
+      </datalist>
+      <label>Архитектура</label>
+      <select name="arch" required>
+        {% for a in arch_list %}<option value="{{ a }}" {{ 'selected' if a == 'x86_64' }}>{{ a }}</option>{% endfor %}
+      </select>
+      <p class="hint">Список — из справочника rdb (<a href=\"/settings\">Настройки → Справочники</a>).</p>
+      <p class="hint">Продукт = ветка + edition + архитектура. Состав наполняется образами
+        с rdb.altlinux.org, состав продукта обновляется diff-ом.</p>
+      <button class="btn" type="submit">Создать продукт</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,222 @@
+{% extends "base.html" %}
+{% block title %}{{ p.title }} — AltTrack{% endblock %}
+{% block content %}
+<h1>{{ p.title }}
+  <span class="muted small">{{ p.branch }} · {{ p.edition or '—' }} · {{ p.arch }}</span>
+</h1>
+
+{% if busy %}<div class="warning">Задача уже выполняется — дождитесь её завершения.</div>{% endif %}
+
+{% if job_report and not job_report.running %}
+  {% if job_report.error %}
+  <div class="error">Ошибка фоновой задачи: {{ job_report.error }}</div>
+  {% else %}
+  <div class="success">
+    {% if job_report.name.startswith('track:') %}Добавление образа{% elif job_report.name.startswith('update:') %}Обновление состава{% else %}Справочник{% endif %}
+    завершено:
+    {% set r = job_report.last %}
+    {% if r is mapping %}
+      {% if r.binaries is defined %}бинарников {{ r.binaries }} → srpm {{ r.srpms }};{% endif %}
+      {% if r.added is defined and r.added %}<strong>+{{ r.added | length }} добавлено;</strong>{% endif %}
+      {% if r.linked is defined and r.linked %}+{{ r.linked | length }} привязано;{% endif %}
+      {% if r.reactivated is defined and r.reactivated %}{{ r.reactivated | length }} возобновлено;{% endif %}
+      {% if r.paused is defined and r.paused %}<strong>−{{ r.paused | length }} на паузу;</strong>{% endif %}
+      {% if r.kept is defined and r.kept %}{{ r.kept | length }} осталось;{% endif %}
+      {% if r.existing is defined and r.existing %}уже было {{ r.existing | length }};{% endif %}
+      {% if r.not_found is defined and r.not_found %}<span class="warn">без srpm: {{ r.not_found | length }}</span>;{% endif %}
+      {% if r.updated is defined and r.updated %}отличаются от репозитория: {{ r.updated }};{% endif %}
+      {% if r.count is defined %}пакетов: {{ r.count }} ({{ r.synced_at }});{% endif %}
+    {% else %}{{ job_report.last }}{% endif %}
+  </div>
+  {% endif %}
+{% endif %}
+
+{% if preview_error %}<div class="error">{{ preview_error }}</div>{% endif %}
+{% if preview %}
+<div class="card">
+  <h2>Предпросмотр: образ {{ preview.image_uuid[:8] }}</h2>
+  <p>бинарников: <strong>{{ preview.binaries }}</strong> → srpm: <strong>{{ preview.srpms | length }}</strong>;
+     <span class="ok">новых {{ preview.new | length }}</span>,
+     уже отслеживается {{ preview.existing | length }},
+     {% if preview.updated %}<span class="warn">версии отличаются от репозитория: {{ preview.updated }}</span>,{% endif %}
+     {% if preview.not_found %}<span class="bad">без srpm: {{ preview.not_found | length }}</span>{% endif %}
+  </p>
+  {% if preview.new %}
+  <p class="small">новые: {% for n in preview.new[:40] %}<span class="tag">{{ n }}</span> {% endfor %}
+    {% if preview.new | length > 40 %}… ещё {{ preview.new | length - 40 }}{% endif %}</p>
+  {% endif %}
+  {% if preview.not_found %}
+  <p class="small muted">без исходного пакета: {% for n in preview.not_found[:20] %}{{ n }}{% if not loop.last %}, {% endif %}{% endfor %}</p>
+  {% endif %}
+  <a class="btn" href="/products/{{ p.id }}">Скрыть предпросмотр</a>
+</div>
+{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Состав по образу</h2>
+    <form method="get" action="/products/{{ p.id }}" class="inline-form">
+      <div class="field"><label>Образ</label>
+        <select name="preview">
+          {% for img in catalog %}
+          <option value="{{ img.uuid }}">{{ img.date[:10] }} · {{ img.type }} · {{ img.file or img.tag }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <button class="btn btn-secondary btn-small" type="submit">Предпросмотр</button>
+    </form>
+
+    <form method="post" action="/products/{{ p.id }}/track" class="stack" style="margin-top:12px">
+      <label>Образ для добавления</label>
+      <select name="uuid" required>
+        {% for img in catalog %}
+        <option value="{{ img.uuid }}">{{ img.date[:10] }} · {{ img.file or img.tag }}</option>
+        {% endfor %}
+      </select>
+      <label class="checkbox-line"><input type="checkbox" name="errata" value="1"> отслеживать errata</label>
+      <label class="checkbox-line"><input type="checkbox" name="maintainer" value="1"> отслеживать сопровождающего</label>
+      <label class="checkbox-line"><input type="checkbox" name="tasks" value="1"> отслеживать сборочные задания</label>
+      <button class="btn" type="submit"
+              onclick="return confirm('Добавить все srpm образа в отслеживание?');">
+        Добавить все srpm образа
+      </button>
+      <p class="hint">По умолчанию: только версии (1 запрос API на пакет при освежении).
+        Errata и задания включаются точечно.</p>
+    </form>
+
+    <form method="post" action="/products/{{ p.id }}/update" class="stack" style="margin-top:14px;border-top:1px solid var(--line);padding-top:8px">
+      <label>Обновить состав (diff)</label>
+      <select name="uuid">
+        <option value="">последний release-образ продукта</option>
+        {% for img in catalog %}
+        <option value="{{ img.uuid }}">{{ img.date[:10] }} · {{ img.file or img.tag }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn btn-secondary" type="submit">Обновить состав</button>
+      <p class="hint">Новые srpm добавляются, выпавшие — на паузу, вернувшиеся — возобновляются.</p>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Справочник и сравнения</h2>
+    <form method="post" action="/products/{{ p.id }}/meta-sync">
+      <button class="btn btn-secondary" type="submit"
+              onclick="return confirm('Обновить справочник ветки {{ p.branch }}? (~6 МБ, один запрос)');">
+        Обновить справочник ({{ p.branch }})
+      </button>
+      <p class="hint">Summary, группа и сопровождающие srpm-пакетов для отчётов сравнения.</p>
+    </form>
+
+    <div style="margin-top:14px">
+      <label style="font-weight:600;font-size:13.5px">Быстрые сравнения</label>
+      <div class="inline-form" style="margin-top:6px">
+        <button class="btn btn-secondary btn-small" form="preset-branch" type="submit">
+          Образ ↔ репозиторий {{ p.branch }}
+        </button>
+        <button class="btn btn-secondary btn-small" form="preset-list" type="submit">
+          Последний образ ↔ загруженный список
+        </button>
+      </div>
+      <form id="preset-branch" method="post" action="/compare/preset" hidden>
+        <input type="hidden" name="preset" value="release-branch">
+      </form>
+      <form id="preset-list" method="post" action="/compare/preset" hidden>
+        <input type="hidden" name="preset" value="release-list">
+      </form>
+    </div>
+
+    {% if comparisons %}
+    <h2 style="margin-top:16px">Сравнения продукта</h2>
+    <table class="compact">
+      <tr><th>ID</th><th>Название</th><th>Отчёты</th></tr>
+      {% for c in comparisons[:8] %}
+      <tr>
+        <td class="muted">#{{ c.id }}</td>
+        <td><a href="/compare/{{ c.id }}">{{ c.title }}</a></td>
+        <td class="small">
+          <span class="pill pill-ok">++{{ c.stats.get('left_only', 0) }}</span>
+          <span class="pill pill-bad">--{{ c.stats.get('right_only', 0) }}</span>
+          <span class="pill pill-warn">&gt;&gt;{{ c.stats.get('changed', 0) }}</span>
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Состав продукта
+    <span class="muted small">({{ counts.total }} пакетов: {{ counts.active }} активных, {{ counts.paused }} на паузе)</span>
+  </h2>
+  <form method="get" action="/products/{{ p.id }}" class="inline-form" style="margin-bottom:10px">
+    <div class="field"><label>Поиск</label>
+      <input type="text" name="q" value="{{ q }}" placeholder="имя пакета">
+    </div>
+    <div class="field"><label>Состояние</label>
+      <select name="state">
+        <option value="" {{ 'selected' if not state }}>все</option>
+        <option value="active" {{ 'selected' if state == 'active' }}>активные</option>
+        <option value="paused" {{ 'selected' if state == 'paused' }}>на паузе</option>
+      </select>
+    </div>
+    <button class="btn btn-secondary" type="submit">Фильтровать</button>
+    <a class="btn btn-secondary" href="/packages" style="margin-left:auto">Все пакеты →</a>
+  </form>
+
+  {% if members %}
+  <table class="compact">
+    <tr><th>Пакет</th><th>Ветки</th><th>Статус</th><th>Откуда</th><th>Наблюдения</th><th>Проверен</th></tr>
+    {% for m in members %}
+    <tr>
+      <td><a href="/packages/{{ m.id }}"><strong>{{ m.name }}</strong></a></td>
+      <td class="small">{{ m.branch_list | join(', ') }}</td>
+      <td>
+        {% if m.enabled and not m.paused_by_image %}<span class="pill pill-ok">вкл</span>
+        {% else %}<span class="pill pill-warn">пауза</span>{% endif %}
+      </td>
+      <td class="small">{{ 'образ' if m.added_by == 'image' else 'вручную' }}</td>
+      <td class="small">
+        {% if m.watch_errata %}<span class="tag">errata</span>{% endif %}
+        {% if m.watch_maintainer %}<span class="tag">ACL</span>{% endif %}
+        {% if m.watch_tasks %}<span class="tag">задания</span>{% endif %}
+        {% if not m.watch_errata and not m.watch_maintainer and not m.watch_tasks %}<span class="muted">только версии</span>{% endif %}
+      </td>
+      <td class="mono small">{{ m.last_checked_at | dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% if members | length >= 300 %}
+  <p class="hint">Показаны первые 300 из {{ counts.total }} — уточните поиском.</p>
+  {% endif %}
+  {% else %}
+  <div class="empty">Ничего не найдено.</div>
+  {% endif %}
+</div>
+
+{% if product_images %}
+<div class="card">
+  <h2>Привязанные образы</h2>
+  <table class="compact">
+    <tr><th>UUID</th><th>Файл / тег</th><th>Тип</th><th>Дата образа</th><th>srpm</th><th>Добавлен</th></tr>
+    {% for img in product_images %}
+    <tr>
+      <td class="mono small">{{ img.image_uuid[:8] }}</td>
+      <td class="small">{{ img.tag or img.image_uuid }}</td>
+      <td><span class="pill {{ 'pill-ok' if img.kind == 'release' else 'pill-arch' }}">{{ img.kind }}</span></td>
+      <td class="small">{{ img.date[:10] if img.date else '—' }}</td>
+      <td>{{ img.package_count }}</td>
+      <td class="mono small">{{ img.added_at | dt }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="inline-form" style="margin-top:16px">
+  <form method="post" action="/products/{{ p.id }}/delete" class="inline-form"
+        onsubmit="return confirm('Удалить продукт {{ p.title }}? Пакеты останутся в отслеживании.');">
+    <button class="btn btn-danger btn-small" type="submit">Удалить продукт</button>
+  </form>
+</div>
+{% endblock %}

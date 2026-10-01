@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ cmp.title }} — AltTrack{% endblock %}
+{% block content %}
+<h1>{{ cmp.title }}</h1>
+<p class="muted small">
+  сравнение #{{ cmp.id }} от {{ cmp.created_at | dt }}
+  · слева: <strong>{{ left_list.title if left_list else '?' }}</strong> ({{ left_list.item_count if left_list else '?' }})
+  · справа: <strong>{{ right_list.title if right_list else '?' }}</strong> ({{ right_list.item_count if right_list else '?' }})
+  {% if product %} · продукт: {{ product.title }}{% endif %}
+  · <a href="/compare">к истории</a>
+</p>
+
+<div class="chips">
+  <a class="chip {{ 'active' if not status }}" href="/compare/{{ cmp.id }}">все · {{ total }}</a>
+  {% for s in statuses %}
+  <a class="chip chip-{{ s }} {{ 'active' if status == s }}" href="/compare/{{ cmp.id }}?status={{ s }}">
+    {{ status_labels[s] }} · {{ stats[s] }}
+  </a>
+  {% endfor %}
+</div>
+
+<p>
+  <a class="btn btn-secondary btn-small" href="/compare/{{ cmp.id }}/export{% if status %}?status={{ status }}{% endif %}">
+    ⬇ CSV{% if status %} ({{ status_labels[status] }}){% endif %}
+  </a>
+  {% if left_list %}<span class="muted small" style="margin-left:10px">строк в отчёте: {{ shown }}{% if shown >= 1000 %} (показаны первые 1000){% endif %}</span>{% endif %}
+</p>
+
+{% if rows %}
+<table id="report">
+  <tr>
+    <th>Статус</th><th>Пакет</th><th>Слева</th><th>Справа</th><th>srpm</th><th>Группа</th><th>Описание</th>
+  </tr>
+  {% for r in rows %}
+  <tr class="rowlink" data-name="{{ r.name }}" data-status="{{ r.status }}"
+      data-lv="{{ r.left.version if r.left else '' }}" data-lr="{{ r.left.release if r.left else '' }}"
+      data-rv="{{ r.right.version if r.right else '' }}" data-rr="{{ r.right.release if r.right else '' }}"
+      data-arch="{{ r.left.arch if r.left else (r.right.arch if r.right else '') }}"
+      data-src="{{ r.source }}" data-cat="{{ r.category }}" data-sum="{{ r.summary }}">
+    <td>
+      {% if r.status == 'left_only' %}<span class="pill pill-ok">{{ status_labels[r.status] }}</span>
+      {% elif r.status == 'right_only' %}<span class="pill pill-bad">{{ status_labels[r.status] }}</span>
+      {% elif r.status == 'changed' %}<span class="pill pill-warn">{{ status_labels[r.status] }}</span>
+      {% else %}<span class="pill">{{ status_labels[r.status] }}</span>{% endif %}
+    </td>
+    <td><strong>{{ r.name }}</strong></td>
+    <td class="mono small">{% if r.left %}{{ r.left.version }}-{{ r.left.release }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="mono small">{% if r.right %}{{ r.right.version }}-{{ r.right.release }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="small">{{ r.source or '—' }}</td>
+    <td class="small">{{ r.category or '—' }}</td>
+    <td class="small muted">{{ r.summary[:70] }}{% if r.summary | length > 70 %}…{% endif %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">Нет строк в этой группе.</div>
+{% endif %}
+
+<div id="modal" class="modal-backdrop" hidden>
+  <div class="modal card">
+    <h2 id="modal-title">—</h2>
+    <table class="compact">
+      <tr><th></th><th>Версия</th><th>Релиз</th></tr>
+      <tr><td>слева</td><td class="mono" id="modal-lv">—</td><td class="mono" id="modal-lr">—</td></tr>
+      <tr><td>справа</td><td class="mono" id="modal-rv">—</td><td class="mono" id="modal-rr">—</td></tr>
+    </table>
+    <p class="small">исходный пакет: <strong id="modal-src">—</strong> ·
+       группа: <span id="modal-cat">—</span> · арх.: <span id="modal-arch">—</span></p>
+    <p class="small" id="modal-sum">—</p>
+    <button class="btn btn-secondary btn-small" onclick="document.getElementById('modal').hidden=true">Закрыть</button>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+document.querySelectorAll('tr.rowlink').forEach(row => {
+  row.addEventListener('click', () => {
+    const d = row.dataset;
+    document.getElementById('modal-title').textContent = d.name;
+    document.getElementById('modal-lv').textContent = d.lv || '—';
+    document.getElementById('modal-lr').textContent = d.lr || '—';
+    document.getElementById('modal-rv').textContent = d.rv || '—';
+    document.getElementById('modal-rr').textContent = d.rr || '—';
+    document.getElementById('modal-src').textContent = d.src || '—';
+    document.getElementById('modal-cat').textContent = d.cat || '—';
+    document.getElementById('modal-arch').textContent = d.arch || '—';
+    document.getElementById('modal-sum').textContent = d.sum || '—';
+    document.getElementById('modal').hidden = false;
+  });
+});
+document.getElementById('modal').addEventListener('click', e => {
+  if (e.target.id === 'modal') e.target.hidden = true;
+});
+</script>
+{% endblock %}

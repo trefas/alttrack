@@ -1,0 +1,114 @@
+{% extends "base.html" %}
+{% block title %}Списки — AltTrack{% endblock %}
+{% block content %}
+<h1>Списки пакетов <span class="muted small">({{ rows | length }})</span></h1>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if created %}<div class="success">Список #{{ created }} сохранён. <a href="/compare?left={{ created }}">Сравнить →</a></div>{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Загрузить список rpm</h2>
+    <form method="post" action="/lists/file" id="upload-form">
+      <div class="dropzone" id="dropzone">
+        <p><strong>Перетащите файл сюда</strong> или
+          <label class="linklike"><input type="file" name="file" id="file-input" accept=".txt,.list,.lst,.log,.md" style="display:none">выберите файл</label></p>
+        <p class="hint" id="file-name">поддерживаются строки вида name-1.2.3-alt1.x86_64[.rpm],
+          полные пути, epoch (1:2.0), .src.rpm; комментарии «#» игнорируются</p>
+      </div>
+      <label>…или вставьте список текстом</label>
+      <textarea name="text" rows="6" placeholder="bash-5.2.15-alt9.x86_64&#10;/mnt/iso/zsh-5.9-alt1.x86_64.rpm"></textarea>
+      <label>Название</label>
+      <input type="text" name="title" placeholder="по умолчанию — имя файла">
+      <label>Ветка для маппинга бинарников в srpm</label>
+      <input type="text" name="branch" value="{{ product.branch if product else '' }}"
+             placeholder="p11, sisyphus…">
+      <input type="hidden" name="product_id" value="{{ product.id if product else '' }}">
+      <p class="hint">Если строки — уже srpm (обычно так), ветку можно оставить пустой.</p>
+      <button class="btn" type="submit">Сохранить список</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Снять состояние репозитория</h2>
+    <form method="post" action="/lists/branch" class="stack">
+      <label>Ветка</label>
+      <input type="text" name="branch" value="{{ product.branch if product else 'p11' }}" required>
+      <label>Архитектуры</label>
+      <div class="checkrow">
+        {% for a in arch_opts %}
+        <label class="checkitem"><input type="checkbox" name="arch" value="{{ a }}"> {{ a }}</label>
+        {% endfor %}
+      </div>
+      <p class="hint">Ничего не отмечено — все архитектуры ветки. Список — из справочника rdb
+        (<a href="/settings">Настройки → Справочники</a>).</p>
+      <label>Название</label>
+      <input type="text" name="title" placeholder="p11 x86_64 (репозиторий)">
+      <button class="btn btn-secondary" type="submit">Снять список ветки</button>
+      <p class="hint">Один запрос к export/branch_binary_packages — все бинарные пакеты ветки
+        с указанием исходного пакета. Идеально как «правая сторона» сравнения.</p>
+    </form>
+
+    <div style="margin-top:16px">
+      <a class="btn" href="/compare">Перейти к сравнению →</a>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Сохранённые списки</h2>
+  {% if rows %}
+  <table>
+    <tr><th>ID</th><th>Название</th><th>Тип</th><th>Пакетов</th><th>Кривых строк</th><th>Создан</th><th></th></tr>
+    {% for l in rows %}
+    <tr>
+      <td class="muted">#{{ l.id }}</td>
+      <td><strong>{{ l.title }}</strong>
+        {% if l.params.branch %}<span class="tag">{{ l.params.branch }}</span>{% endif %}
+        {% if l.params.uuid %}<span class="mono muted small">{{ l.params.uuid[:8] }}</span>{% endif %}
+      </td>
+      <td><span class="pill pill-arch">{{ l.kind }}</span></td>
+      <td>{{ l.item_count }}</td>
+      <td>{% if l.bad_lines %}<span class="warn">{{ l.bad_lines }}</span>{% else %}—{% endif %}</td>
+      <td class="mono small">{{ l.created_at | dt }}</td>
+      <td class="small" style="white-space:nowrap">
+        <a href="/compare?left={{ l.id }}">сравнить</a> ·
+        <form method="post" action="/lists/{{ l.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Удалить список #{{ l.id }} и связанные сравнения?');">
+          <button class="linklike" type="submit">удалить</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">Списков пока нет — загрузите файл или снимите состояние репозитория.</div>
+  {% endif %}
+</div>
+
+{% endblock %}
+{% block scripts %}
+<script>
+const dz = document.getElementById('dropzone');
+const input = document.getElementById('file-input');
+const form = document.getElementById('upload-form');
+const label = document.getElementById('file-name');
+if (dz) {
+  ['dragenter', 'dragover'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.add('drag');
+  }));
+  ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => {
+    e.preventDefault(); dz.classList.remove('drag');
+  }));
+  dz.addEventListener('drop', e => {
+    if (e.dataTransfer.files.length) {
+      input.files = e.dataTransfer.files;
+      label.textContent = 'файл: ' + e.dataTransfer.files[0].name;
+    }
+  });
+  input.addEventListener('change', () => {
+    if (input.files.length) label.textContent = 'файл: ' + input.files[0].name;
+  });
+}
+</script>
+{% endblock %}

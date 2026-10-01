@@ -15,7 +15,7 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import __version__, archive, journal, refresh, tasks, watchlist
+from . import __version__, archive, compare, images, journal, lists, metasync, products, refresh, refs, tasks, watchlist
 from .api import ALTRepoClient, ApiError
 from .config import Config, load_config
 from .db import open_db
@@ -29,8 +29,21 @@ app = typer.Typer(
 )
 watch_app = typer.Typer(help="Управление списком отслеживаемых пакетов (CRUD).", no_args_is_help=True)
 task_app = typer.Typer(help="Сборочные задания.", no_args_is_help=True)
+product_app = typer.Typer(help="Продукты: образы дистрибутива и их состав.", no_args_is_help=True)
+image_app = typer.Typer(help="Каталог образов дистрибутива (rdb /image).", no_args_is_help=True)
+list_app = typer.Typer(help="Сохранённые списки пакетов для сравнения.", no_args_is_help=True)
+compare_app = typer.Typer(help="Сравнение двух списков пакетов.", no_args_is_help=True)
+meta_app = typer.Typer(
+    help="Справочники rdb: пакеты (summary/группа/ACL), архитектуры, группы ПО.",
+    no_args_is_help=True,
+)
 app.add_typer(watch_app, name="watch")
 app.add_typer(task_app, name="task")
+app.add_typer(product_app, name="product")
+app.add_typer(image_app, name="image")
+app.add_typer(list_app, name="list")
+app.add_typer(compare_app, name="compare")
+app.add_typer(meta_app, name="meta")
 
 console = Console()
 err_console = Console(stderr=True, style="bold red")
@@ -178,6 +191,60 @@ def watch_add(
     console.print(f"[green]добавлено:[/green] {pkg.name} → ветки: {', '.join(pkg.branches)}")
     for warning in report["warnings"]:
         err_console.print(f"предупреждение: {warning}")
+
+
+@watch_app.command("backfill")
+def watch_backfill(
+    key: Optional[list[str]] = typer.Option(
+        None, "--package", "-p", help="Пакет (ID или имя; можно несколько)."
+    ),
+    all_packages: bool = typer.Option(False, "--all", help="Все отслеживаемые пакеты."),
+    limit: int = typer.Option(
+        0, "--limit", help="Сколько сборок на ветку (0 — из конфига: backfill_limit)."
+    ),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Импортировать историю сборок (по запросу, с прогрессом)."""
+    if not key and not all_packages:
+        _fail("укажите --package (можно несколько) или --all")
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    effective_limit = limit or cfg.backfill_limit
+    try:
+        if all_packages:
+            targets = watchlist.list_packages(conn)
+        else:
+            targets = []
+            for item in key or []:
+                try:
+                    targets.append(watchlist.require_package(conn, item))
+                except KeyError:
+                    _fail(f"пакет {item!r} не отслеживается")
+        total = 0
+        errors = 0
+        for index, pkg in enumerate(targets, 1):
+            try:
+                added = refresh.backfill_build_history(
+                    conn, client, pkg.id, pkg.name, pkg.branches, effective_limit
+                )
+            except ApiError as exc:
+                errors += 1
+                err_console.print(f"{pkg.name}: {exc}")
+                continue
+            total += added
+            console.print(
+                f"[{index}/{len(targets)}] {pkg.name}: +{added}", highlight=False
+            )
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"[green]готово:[/green] пакетов {len(targets)}, импортировано событий {total} "
+        f"(лимит {effective_limit} на ветку)"
+    )
+    if errors:
+        raise typer.Exit(code=1)
 
 
 @watch_app.command("list")
@@ -620,6 +687,729 @@ def config_cmd(
     cfg = _cfg(db)
     for key, value in cfg.to_dict().items():
         console.print(f"{key} = {value}")
+
+
+# ---------------------------------------------------------------------------
+# products / images / lists / compare / meta
+# ---------------------------------------------------------------------------
+def _say(text: str) -> None:
+    console.print(f"[dim]{text}[/dim]")
+
+
+def _require_product(conn, key: str):
+    try:
+        return products.require_product(conn, key)
+    except KeyError:
+        _fail(f"продукт {key!r} не найден (создайте: alttrack product create ...)")
+
+
+def _ensure_catalog(conn, client) -> None:
+    if images.catalog_is_empty(conn):
+        _say("каталог образов пуст — загружаю…")
+        count = images.refresh_catalog(conn, client)
+        _say(f"загружено образов: {count}")
+
+
+def _print_track_report(report: dict[str, Any]) -> None:
+    console.print(
+        f"[green]образ {report['image_uuid'][:8]}:[/green] "
+        f"бинарников {report['binaries']} → srpm {report['srpms']}"
+    )
+    if report.get("added"):
+        console.print(f"  [green]+ добавлено:[/green] {len(report['added'])}")
+    if report.get("linked"):
+        console.print(f"  [green]+ привязано:[/green] {len(report['linked'])}")
+    if report.get("branch_updated"):
+        console.print(f"  ветка продукта добавлена: {len(report['branch_updated'])}")
+    if report.get("reactivated"):
+        console.print(f"  [green]возобновлено:[/green] {len(report['reactivated'])}")
+    if report.get("kept"):
+        console.print(f"  осталось: {len(report['kept'])}")
+    if report.get("paused"):
+        console.print(f"  [yellow]- на паузу:[/yellow] {len(report['paused'])}")
+    if report.get("existing"):
+        console.print(f"  уже отслеживалось: {len(report['existing'])}")
+    if report.get("not_found"):
+        err_console.print(
+            f"не найдено исходных пакетов: {len(report['not_found'])} "
+            f"({', '.join(report['not_found'][:10])})"
+        )
+    if report.get("updated"):
+        _say(f"версии в образе отличаются от репозитория: {report['updated']}")
+
+
+@product_app.command("list")
+def product_list(
+    db: Optional[Path] = DB_OPTION,
+    json_out: bool = typer.Option(False, "--json", help="JSON-вывод."),
+) -> None:
+    """Список продуктов."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        rows = products.list_products(conn)
+        if json_out:
+            console.print_json(json.dumps([vars(p) for p in rows], ensure_ascii=False))
+            return
+        table = Table(title=f"Продукты ({len(rows)})")
+        for column in ("ID", "Название", "Ветка", "Edition", "Арх.", "Пакетов", "Создан"):
+            table.add_column(column)
+        for p in rows:
+            counts = products.product_counts(conn, p)
+            table.add_row(
+                str(p.id), p.title, p.branch, p.edition, p.arch,
+                str(counts["active"]) + (f" (+{counts['paused']} пауза)" if counts["paused"] else ""),
+                p.created_at[:10],
+            )
+        console.print(table)
+        if not rows:
+            console.print("[dim]продуктов нет — создайте: alttrack product create \"Название\" --branch p11[/dim]")
+    finally:
+        conn.close()
+
+
+@product_app.command("create")
+def product_create(
+    title: str = typer.Argument(..., help="Название продукта."),
+    branch: str = typer.Option(..., "--branch", "-b", help="Ветка продукта (p11, p10, sisyphus…)."),
+    edition: str = typer.Option("", "--edition", "-e", help="Edition образа (education, server…)."),
+    arch: str = typer.Option("x86_64", "--arch", help="Архитектура."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Создать продукт."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            p = products.create_product(conn, title=title, branch=branch, edition=edition, arch=arch)
+        except ValueError as exc:
+            _fail(str(exc))
+    finally:
+        conn.close()
+    console.print(f"[green]создан продукт[/green] id={p.id}: {p.title} ({p.branch}, {p.edition or '—'}, {p.arch})")
+
+
+@product_app.command("show")
+def product_show(
+    key: str = typer.Argument(..., help="ID или название продукта."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Карточка продукта: состав, образы, последние сравнения."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        p = _require_product(conn, key)
+        counts = products.product_counts(conn, p)
+        console.print(
+            f"[bold]{p.title}[/bold] (id={p.id}) — {p.branch}, "
+            f"{p.edition or '—'}, {p.arch}; пакетов: {counts['total']} "
+            f"(активных {counts['active']}, на паузе {counts['paused']})"
+        )
+        imgs = products.product_images(conn, p)
+        if imgs:
+            table = Table(title="Привязанные образы")
+            for column in ("UUID", "Тег", "Тип", "Дата", "Пакетов", "Добавлен"):
+                table.add_column(column)
+            for row in imgs[:10]:
+                table.add_row(
+                    row["image_uuid"][:8], row["tag"] or "—", row["kind"],
+                    (row["date"] or "—"), str(row["package_count"]), row["added_at"][:16].replace("T", " "),
+                )
+            console.print(table)
+        comps = compare.list_comparisons(conn, product_id=p.id)
+        if comps:
+            console.print("сравнения: " + ", ".join(f"#{c.id} {c.title}" for c in comps[:5]))
+    finally:
+        conn.close()
+
+
+@product_app.command("rm")
+def product_rm(
+    key: str = typer.Argument(..., help="ID или название продукта."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Не спрашивать подтверждения."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Удалить продукт (пакеты остаются отслеживаться)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        p = _require_product(conn, key)
+        if not yes and not typer.confirm(f"Удалить продукт {p.title}?"):
+            raise typer.Abort()
+        products.delete_product(conn, p)
+    finally:
+        conn.close()
+    console.print(f"[green]удалено:[/green] продукт {p.title} (пакеты не тронуты)")
+
+
+# -- images ------------------------------------------------------------------
+@image_app.command("refresh")
+def image_refresh_cmd(
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Обновить каталог образов из rdb.altlinux.org."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        count = images.refresh_catalog(conn, client)
+    except ApiError as exc:
+        _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(f"[green]каталог обновлён:[/green] образов {count}")
+
+
+@image_app.command("list")
+def image_list(
+    branch: Optional[str] = typer.Option(None, "--branch", "-b"),
+    edition: Optional[str] = typer.Option(None, "--edition", "-e"),
+    arch: Optional[str] = typer.Option(None, "--arch"),
+    release: Optional[str] = typer.Option(None, "--release", help="release | test"),
+    limit: int = typer.Option(30, "--limit", "-n"),
+    json_out: bool = typer.Option(False, "--json"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Каталог образов дистрибутива (с фильтрами)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        _ensure_catalog(conn, client)
+        rows = images.catalog(
+            conn, branch=branch, edition=edition, arch=arch, release=release, limit=limit
+        )
+        if json_out:
+            console.print_json(json.dumps([dict(r) for r in rows], ensure_ascii=False))
+            return
+        table = Table(title=f"Образы ({len(rows)})")
+        for column in ("UUID", "Ветка", "Edition", "Арх.", "Тип", "Дата", "Файл"):
+            table.add_column(column)
+        for row in rows:
+            table.add_row(
+                row["uuid"][:8], row["branch"], row["edition"] or "—", row["arch"] or "—",
+                (row["type"] or "—"), (row["date"] or "—"), (row["file"] or "")[:44],
+            )
+        console.print(table)
+        _say("детали: alttrack image preview <uuid> --product <продукт>")
+    finally:
+        client.close()
+        conn.close()
+
+
+@image_app.command("preview")
+def image_preview_cmd(
+    uuid: str = typer.Argument(..., help="UUID образа (первые 8 знаков из image list)."),
+    product: str = typer.Option(..., "--product", "-p", help="Продукт (ID или название)."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Показать, что изменится при добавлении образа (dry-run)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        p = _require_product(conn, product)
+        try:
+            preview = products.preview_from_image(conn, client, p, uuid, progress=_say)
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"бинарников: {preview['binaries']} → srpm: {len(preview['srpms'])}; "
+        f"[green]новых {len(preview['new'])}[/green], "
+        f"уже есть {len(preview['existing'])}"
+    )
+    if preview["not_found"]:
+        err_console.print(f"без исходного пакета: {', '.join(preview['not_found'][:10])}")
+    if preview["new"]:
+        console.print("новые: " + ", ".join(preview["new"][:30]) + ("…" if len(preview["new"]) > 30 else ""))
+
+
+@image_app.command("track")
+def image_track(
+    uuid: str = typer.Argument(..., help="UUID образа."),
+    product: str = typer.Option(..., "--product", "-p", help="Продукт (ID или название)."),
+    errata: bool = typer.Option(False, "--errata", help="Включить отслеживание errata."),
+    maintainer: bool = typer.Option(False, "--maintainer", help="Включить отслеживание сопровождающего."),
+    tasks: bool = typer.Option(False, "--tasks", help="Включить отслеживание сборочных заданий."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Добавить все srpm образа в отслеживание продукта."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        p = _require_product(conn, product)
+        try:
+            report = products.track_from_image(
+                conn, client, p, uuid,
+                watch_errata=errata, watch_maintainer=maintainer, watch_tasks=tasks,
+                progress=_say,
+            )
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    _print_track_report(report)
+
+
+@image_app.command("update")
+def image_update(
+    product: str = typer.Option(..., "--product", "-p", help="Продукт (ID или название)."),
+    uuid: Optional[str] = typer.Argument(None, help="UUID нового образа (или --latest)."),
+    latest: bool = typer.Option(False, "--latest", help="Взять последний release-образ продукта из каталога."),
+    errata: bool = typer.Option(False, "--errata"),
+    maintainer: bool = typer.Option(False, "--maintainer"),
+    tasks: bool = typer.Option(False, "--tasks"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Обновить состав продукта по образу (diff: +новые, −пауза)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        p = _require_product(conn, product)
+        if latest or not uuid:
+            if not uuid and not latest:
+                _fail("укажите UUID образа или --latest")
+            _ensure_catalog(conn, client)
+            row = images.latest_release_image(
+                conn, branch=p.branch, edition=p.edition, arch=p.arch
+            )
+            if row is None:
+                _fail(f"для продукта {p.title} не найден release-образ в каталоге")
+            uuid = str(row["uuid"])
+            _say(f"выбран образ {uuid[:8]} ({row['date'] or '?'}, {row['file'] or ''})")
+        try:
+            report = products.update_from_image(
+                conn, client, p, str(uuid),
+                watch_errata=errata, watch_maintainer=maintainer, watch_tasks=tasks,
+                progress=_say,
+            )
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    _print_track_report(report)
+
+
+# -- lists -------------------------------------------------------------------
+@list_app.command("save-file")
+def list_save_file(
+    file: str = typer.Argument(..., help="Файл со списком rpm (или - для stdin)."),
+    title: str = typer.Option("", "--title", "-t"),
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    branch: Optional[str] = typer.Option(
+        None, "--branch", "-b", help="Ветка для маппинга бинарников в srpm."
+    ),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Сохранить список из файла или stdin."""
+    cfg = _cfg(db)
+    text = sys.stdin.read() if file == "-" else Path(file).read_text(encoding="utf-8", errors="replace")
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        product_id = _require_product(conn, product).id if product else None
+        try:
+            list_obj, report = lists.save_file_list(
+                conn, text=text, title=title or Path(file).name,
+                product_id=product_id, source_branch=branch, client=client, progress=_say,
+            )
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"[green]список #{list_obj.id}[/green] «{list_obj.title}»: "
+        f"разобрано {report['parsed']}, маппинг в srpm {report['mapped']}"
+    )
+    if report["bad_count"]:
+        err_console.print(f"не разобрано строк: {report['bad_count']} (например: {report['bad'][:3]})")
+    console.print(f"сравнить: alttrack compare run --left {list_obj.id} --right <другой id>")
+
+
+@list_app.command("save-image")
+def list_save_image(
+    uuid: str = typer.Argument(..., help="UUID образа."),
+    title: str = typer.Option("", "--title", "-t"),
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Сохранить состав образа как список."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        _ensure_catalog(conn, client)
+        product_id = _require_product(conn, product).id if product else None
+        try:
+            list_obj, report = lists.save_image_list(
+                conn, client, uuid=uuid, title=title or None,
+                product_id=product_id, progress=_say,
+            )
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(f"[green]список #{list_obj.id}[/green] «{list_obj.title}»: {report['parsed']} пакетов")
+
+
+@list_app.command("save-branch")
+def list_save_branch(
+    branch: str = typer.Argument(..., help="Ветка репозитория (p11, sisyphus…)."),
+    arch: Optional[list[str]] = typer.Option(
+        None, "--arch", "-a",
+        help="Архитектура; флаг можно повторять (по умолчанию все).",
+    ),
+    title: str = typer.Option("", "--title", "-t"),
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Сохранить содержимое ветки репозитория как список."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        product_id = _require_product(conn, product).id if product else None
+        try:
+            list_obj, report = lists.save_branch_list(
+                conn, client, branch=branch, arch=arch,
+                title=title or None, product_id=product_id, progress=_say,
+            )
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"[green]список #{list_obj.id}[/green] «{list_obj.title}»: "
+        f"{report['parsed']} пакетов (srpm: {report['mapped']})"
+    )
+
+
+@list_app.command("ls")
+def list_ls(
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Сохранённые списки."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        product_id = _require_product(conn, product).id if product else None
+        rows = lists.list_lists(conn, product_id=product_id)
+        table = Table(title=f"Списки ({len(rows)})")
+        for column in ("ID", "Название", "Тип", "Пакетов", "Кривых", "Создан"):
+            table.add_column(column)
+        for row in rows:
+            table.add_row(
+                str(row.id), row.title[:44], row.kind, str(row.item_count),
+                str(row.bad_lines) or "", row.created_at[:16].replace("T", " "),
+            )
+        console.print(table)
+        if not rows:
+            console.print("[dim]списков нет — alttrack list save-file <файл>[/dim]")
+    finally:
+        conn.close()
+
+
+@list_app.command("show")
+def list_show(
+    list_id: int = typer.Argument(..., help="ID списка."),
+    limit: int = typer.Option(30, "--limit", "-n"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Показать содержимое списка."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            list_obj = lists.require_list(conn, list_id)
+        except KeyError:
+            _fail(f"список {list_id} не найден")
+        console.print(f"[bold]#{list_obj.id}[/bold] {list_obj.title} ({list_obj.kind}, {list_obj.item_count} пакетов)")
+        items = lists.list_items(conn, list_obj.id)
+        table = Table()
+        for column in ("Пакет", "Версия", "Релиз", "Арх.", "srpm"):
+            table.add_column(column)
+        for item in items[:limit]:
+            table.add_row(item["name"], item["version"], item["release"], item["arch"] or "—",
+                          item["source_name"] or "—")
+        console.print(table)
+        if len(items) > limit:
+            _say(f"… ещё {len(items) - limit}")
+    finally:
+        conn.close()
+
+
+@list_app.command("rm")
+def list_rm(
+    list_id: int = typer.Argument(..., help="ID списка."),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Удалить список (и сравнения, где он участвует)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            list_obj = lists.require_list(conn, list_id)
+        except KeyError:
+            _fail(f"список {list_id} не найден")
+        if not yes and not typer.confirm(f"Удалить список #{list_obj.id} «{list_obj.title}»?"):
+            raise typer.Abort()
+        lists.delete_list(conn, list_obj.id)
+    finally:
+        conn.close()
+    console.print("[green]удалено:[/green] список и связанные сравнения")
+
+
+# -- compare -----------------------------------------------------------------
+def _print_report(result: dict[str, Any], *, limit: int = 30) -> None:
+    stats = result["stats"]
+    console.print(
+        f"итого {result['total']}: "
+        f"[green]++ {stats[compare.LEFT_ONLY]}[/green], "
+        f"[red]-- {stats[compare.RIGHT_ONLY]}[/red], "
+        f"[yellow]>> {stats[compare.CHANGED]}[/yellow], "
+        f"== {stats[compare.SAME]}"
+    )
+    interesting = [
+        r for r in result["rows"] if r["status"] != compare.SAME
+    ]
+    if not interesting:
+        return
+    table = Table(title="Отличия")
+    for column in ("Статус", "Пакет", "Слева", "Справа", "srpm", "Группа"):
+        table.add_column(column)
+    for row in interesting[:limit]:
+        left = row["left"]
+        right = row["right"]
+        table.add_row(
+            compare.STATUS_LABELS[row["status"]],
+            row["name"],
+            f"{left['version']}-{left['release']}" if left else "—",
+            f"{right['version']}-{right['release']}" if right else "—",
+            row["source"] or "—",
+            row["category"] or "—",
+        )
+    console.print(table)
+    if len(interesting) > limit:
+        _say(f"… ещё {len(interesting) - limit} (alttrack compare show <id> --limit …)")
+
+
+@compare_app.command("run")
+def compare_run(
+    left: int = typer.Option(..., "--left", "-l", help="ID левого списка."),
+    right: int = typer.Option(..., "--right", "-r", help="ID правого списка."),
+    title: str = typer.Option("", "--title", "-t"),
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    limit: int = typer.Option(30, "--limit", "-n"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Сравнить два списка и сохранить сравнение в историю."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        product_id = _require_product(conn, product).id if product else None
+        try:
+            cmp_obj = compare.save(
+                conn, left_id=left, right_id=right, title=title, product_id=product_id
+            )
+        except KeyError as exc:
+            _fail(str(exc))
+        result = compare.report(conn, cmp_obj)
+    finally:
+        conn.close()
+    console.print(f"[bold]сравнение #{cmp_obj.id}:[/bold] {cmp_obj.title}")
+    _print_report(result, limit=limit)
+
+
+@compare_app.command("history")
+def compare_history(
+    product: Optional[str] = typer.Option(None, "--product", "-p"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """История сравнений."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        product_id = _require_product(conn, product).id if product else None
+        rows = compare.list_comparisons(conn, product_id=product_id)
+        table = Table(title=f"Сравнения ({len(rows)})")
+        for column in ("ID", "Название", "++", "--", ">>", "==", "Создано"):
+            table.add_column(column)
+        for row in rows:
+            stats = row.stats
+            table.add_row(
+                str(row.id), row.title[:50],
+                str(stats.get(compare.LEFT_ONLY, 0)), str(stats.get(compare.RIGHT_ONLY, 0)),
+                str(stats.get(compare.CHANGED, 0)), str(stats.get(compare.SAME, 0)),
+                row.created_at[:16].replace("T", " "),
+            )
+        console.print(table)
+        if not rows:
+            console.print("[dim]сравнений нет — alttrack compare run -l <id> -r <id>[/dim]")
+    finally:
+        conn.close()
+
+
+@compare_app.command("show")
+def compare_show(
+    cmp_id: int = typer.Argument(..., help="ID сравнения."),
+    status: Optional[str] = typer.Option(
+        None, "--status", "-s", help=f"Только группа: {', '.join(compare.STATUSES)}"
+    ),
+    limit: int = typer.Option(30, "--limit", "-n"),
+    csv_out: Optional[str] = typer.Option(
+        None, "--csv", help="Записать отчёт в CSV (файл, или - для stdout)."
+    ),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Отчёт по сравнению (пересчитывается на лету)."""
+    if status and status not in compare.STATUSES:
+        _fail(f"статус должен быть одним из: {', '.join(compare.STATUSES)}")
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            cmp_obj = compare.require_comparison(conn, cmp_id)
+        except KeyError:
+            _fail(f"сравнение {cmp_id} не найдено")
+        result = compare.report(conn, cmp_obj)
+    finally:
+        conn.close()
+
+    if csv_out:
+        payload = compare.to_csv(result["rows"], status=status)
+        if csv_out == "-":
+            sys.stdout.write(payload)
+        else:
+            Path(csv_out).write_text(payload, encoding="utf-8")
+            console.print(f"[green]CSV записан:[/green] {csv_out}")
+        return
+    console.print(f"[bold]#{cmp_obj.id}[/bold] {cmp_obj.title}")
+    if status:
+        rows = [r for r in result["rows"] if r["status"] == status]
+        stats = {s: sum(1 for r in rows if r["status"] == s) for s in compare.STATUSES}
+        result = dict(result, rows=rows, stats=stats, total=len(rows))
+    _print_report(result, limit=limit)
+
+
+@compare_app.command("rm")
+def compare_rm(
+    cmp_id: int = typer.Argument(..., help="ID сравнения."),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Удалить сравнение из истории."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        try:
+            cmp_obj = compare.require_comparison(conn, cmp_id)
+        except KeyError:
+            _fail(f"сравнение {cmp_id} не найдено")
+        if not yes and not typer.confirm(f"Удалить сравнение #{cmp_obj.id}?"):
+            raise typer.Abort()
+        compare.delete_comparison(conn, cmp_obj.id)
+    finally:
+        conn.close()
+    console.print("[green]удалено:[/green] сравнение")
+
+
+# -- meta --------------------------------------------------------------------
+@meta_app.command("sync")
+def meta_sync(
+    branch: str = typer.Option(..., "--branch", "-b", help="Ветка (p11, sisyphus…)."),
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Обновить справочник пакетов ветки (summary/группа/сопровождающий)."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        report = metasync.sync(conn, client, branch=branch)
+    except ApiError as exc:
+        _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"[green]справочник обновлён:[/green] {report['branch']} — {report['count']} пакетов "
+        f"({report['synced_at']})"
+    )
+
+
+@meta_app.command("status")
+def meta_status(
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Состояние справочника по веткам."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    try:
+        rows = metasync.status(conn)
+        table = Table(title="Справочник package_meta")
+        for column in ("Ветка", "Тип", "Пакетов", "Обновлён"):
+            table.add_column(column)
+        for row in rows:
+            table.add_row(row["branch"], row["kind"], str(row["count"]),
+                          (row["synced_at"] or "—").replace("T", " ")[:19])
+        console.print(table)
+        if not rows:
+            console.print("[dim]справочник пуст — заполнится при первом добавлении образа[/dim]")
+
+        ref_rows = refs.status(conn)
+        if ref_rows:
+            table = Table(title="Справочники: архитектуры и группы ПО")
+            for column in ("Справочник", "Строк", "Обновлён"):
+                table.add_column(column)
+            labels = {"arch": "архитектуры", "category": "группы ПО"}
+            for row in ref_rows:
+                table.add_row(
+                    labels.get(row["kind"], row["kind"]),
+                    str(row["count"]),
+                    (row["synced_at"] or "—").replace("T", " ")[:19],
+                )
+            console.print(table)
+        else:
+            console.print(
+                "[dim]справочники архитектур/групп не загружены — alttrack meta refs[/dim]"
+            )
+    finally:
+        conn.close()
+
+
+@meta_app.command("refs")
+def meta_refs(
+    db: Optional[Path] = DB_OPTION,
+) -> None:
+    """Обновить справочники архитектур и групп ПО из rdb."""
+    cfg = _cfg(db)
+    conn = open_db(cfg.db_path)
+    client = _client(cfg)
+    try:
+        try:
+            report = refs.sync(conn, client, progress=_say)
+        except ApiError as exc:
+            _fail(f"ошибка API: {exc}")
+    finally:
+        client.close()
+        conn.close()
+    console.print(
+        f"[green]справочники обновлены:[/green] архитектур {report['arch']}, "
+        f"групп ПО {report['category']} (ветки: {', '.join(report['branches']) or '—'}, "
+        f"{report['synced_at']})"
+    )
 
 
 # ---------------------------------------------------------------------------

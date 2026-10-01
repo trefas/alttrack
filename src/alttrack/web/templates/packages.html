@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Пакеты — alttrack{% endblock %}
+{% block title %}Пакеты — AltTrack{% endblock %}
 {% block content %}
 <h1>Отслеживаемые пакеты <span class="muted small">({{ packages | length }})</span></h1>
 
@@ -11,7 +11,16 @@
     <button class="btn btn-secondary" type="submit">Найти</button>
   </form>
   <a class="btn" href="/packages/new" style="margin-left:auto">+ Добавить пакет</a>
+  <a class="btn btn-secondary" href="/images"
+     title="Выберите образ дистрибутива — все его srpm уйдут в отслеживание продукта">
+    + Добавить из образа
+  </a>
 </div>
+{% if not packages and not q %}
+<p class="hint" style="margin-top:-6px">Массовое добавление: образ дистрибутива → все его
+  исходные пакеты разом (<a href="/images">каталог образов</a> → «предпросмотр» у продукта).
+  Нужен <a href="/products">продукт</a> — он задаёт ветку, edition и архитектуру.</p>
+{% endif %}
 
 {% if packages %}
 <table>

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}Настройки — alttrack{% endblock %}
+{% block title %}Настройки — AltTrack{% endblock %}
 {% block content %}
 <h1>Настройки</h1>
 
@@ -46,6 +46,44 @@
       </div>
     </form>
   </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h2>Справочники rdb</h2>
+  {% if refs_saved %}<div class="success">Справочники обновлены из rdb.altlinux.org.</div>{% endif %}
+  {% if refs_error %}<div class="error">Не удалось обновить справочники: {{ refs_error }}</div>{% endif %}
+
+  <div class="inline-form" style="margin-bottom:10px">
+    <form method="post" action="/settings/refs/sync">
+      <button class="btn btn-secondary" type="submit">Обновить справочники</button>
+    </form>
+    <span class="hint" style="margin-left:10px">Списки архитектур и групп ПО читаются из API
+      при первом заполнении базы и обновляются вручную — меняются крайне редко.</span>
+  </div>
+
+  <table class="compact">
+    <tr>
+      <td style="width:220px"><strong>Архитектуры</strong> <span class="muted">({{ arch_list | length }})</span></td>
+      <td>{% for a in arch_list %}<span class="tag">{{ a }}</span> {% endfor %}</td>
+    </tr>
+    <tr>
+      <td><strong>Группы ПО</strong> <span class="muted">({{ category_list | length }})</span></td>
+      <td>
+        {% for c in category_list[:25] %}<span class="tag" title="пакетов в ветках: {{ c.count }}">{{ c.value }}</span> {% endfor %}
+        {% if category_list | length > 25 %}<span class="muted">… ещё {{ category_list | length - 25 }}</span>{% endif %}
+      </td>
+    </tr>
+  </table>
+
+  {% if refs %}
+  <p class="hint">
+    {% for r in refs %}{{ r.kind }}: строк {{ r.count }}, обновлено {{ r.synced_at | dt }}{% if not loop.last %} · {% endif %}{% endfor %}
+    · источники: <code>/site/all_pkgset_archs</code>, <code>/site/pkgset_categories_count</code>
+  </p>
+  {% else %}
+  <p class="hint">Справочники ещё не загружены — заполняются при первом освежении или по кнопке выше.
+    В CLI: <code>alttrack meta refs</code>.</p>
+  {% endif %}
 </div>
 
 <div class="card" style="margin-top:16px">

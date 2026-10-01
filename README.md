@@ -13,6 +13,18 @@
 - сборки, попавшие в репозиторий;
 - **сборочные задания**: появление, смена состояния, сбой, успех, повторная попытка.
 
+Сверх того приложение работает с **продуктами** — именованными образами
+дистрибутива (ветка + edition + архитектура), за которыми закреплён продуктовик:
+
+- каталог образов с rdb (`/image/image_info`, 361 образ);
+- **массовое добавление**: все srpm образа уходят в отслеживание за секунды
+  (маппинг бинарников → srpm одним POST, справочник и baseline — одним запросом);
+- **diff-обновление состава**: новые добавляются, выпавшие — на паузу,
+  вернувшиеся — возобновляются, с понятным отчётом;
+- **сравнение двух списков пакетов** с четырьмя статусами (только слева /
+  только справа / версии отличаются / совпадают), группировкой по srpm,
+  CSV-выгрузкой и историей.
+
 Есть CRUD списка отслеживаемых пакетов, архивация журнала с полнотекстовым поиском
 (FTS5) и два интерфейса — **CLI** и **локальный веб-дашборд**, работающие на одном
 сервисном слое.
@@ -59,6 +71,7 @@ alttrack watch list                             # список                 (
 alttrack watch edit firefox --add-branch p10    # скорректировать ветки   (Update)
 alttrack watch show firefox                     # состояние по веткам
 alttrack watch rm firefox                       # убрать из отслеживания  (Delete)
+alttrack watch backfill --all                   # импорт истории сборок (с прогрессом)
 alttrack refresh                                # освежить вручную
 alttrack log -n 30                              # журнал событий
 alttrack search "firefox AND CVE"               # поиск по журналу и архиву
@@ -68,6 +81,33 @@ alttrack archive --older-than 90 --dry-run      # архивация (пробн
 alttrack stats                                  # статистика
 alttrack serve                                  # веб-интерфейс + фоновое освежение
 ```
+
+### Продукты, образы, сравнение
+
+```bash
+# 1) продукт = ветка + edition + архитектура
+alttrack product create "Образование 11" --branch p11 --edition alt-education
+
+# 2) каталог образов и состав
+alttrack image refresh                          # обновить каталог (361 образ)
+alttrack image list --branch p11 --edition alt-education
+alttrack image preview <uuid> -p 1              # dry-run: что будет добавлено
+alttrack image track <uuid> -p 1                # добавить все srpm образа
+alttrack image update -p 1 --latest             # diff-обновление состава
+
+# 3) списки и сравнение
+alttrack list save-image <uuid> --title "11.2"  # образ как список
+alttrack list save-branch p11 --arch x86_64     # состояние ветки как список
+alttrack list save-file packages.txt -b p11     # загруженный файл (путь, epoch, .rpm)
+alttrack compare run -l 1 -r 2 -t "11.2 ↔ p11"  # отчёт + история
+alttrack compare show 1 --status changed        # одна группа; --csv file.csv
+alttrack meta sync --branch p11                 # справочник (summary/группа/ACL)
+alttrack meta refs                              # архитектуры и группы ПО из rdb
+```
+
+По умолчанию массовое добавление включает **только отслеживание версий**
+(errata/ACL/задания выключены — это 1 запрос API на пакет при освежении);
+переключатели включаются флагами `--errata/--maintainer/--tasks` или в вебе.
 
 ## Поведение при первом запуске
 
@@ -120,8 +160,20 @@ alttrack serve --port 9000 --no-refresh
 | `/stats` | `stats` |
 | `/tasks`, `/tasks/{id}` | `tasks`, `task show` |
 | `/runs` | `runs` |
-| `/settings` | `config` (записывает TOML) |
+| `/settings` | `config` (записывает TOML), `meta refs` (справочники архитектур/групп) |
+| `/products`, `/products/{id}` (состав, предпросмотр, diff) | `product list/show/create/rm`, `image preview/track/update` |
+| `/images` (каталог образов с фильтрами) | `image list/refresh` |
+| `/lists` (загрузка файла, drag&drop, вставка, снятие ветки) | `list save-file/save-image/save-branch/rm` |
+| `/compare`, `/compare/{id}` (отчёт, CSV, история) | `compare run/show/history/rm` |
 | кнопка «Обновить сейчас» | `refresh` |
+| кнопка «Импортировать историю сборок» на странице пакета | `watch backfill` |
+
+Массовые операции (добавление образа, diff-обновление, импорт истории,
+обновление справочника) выполняются **в фоне**: страница показывает баннер
+задачи и сама перезагружается по завершении (`GET /api/jobs` — статус).
+
+**Селектор продукта** в шапке фильтрует журнал, дашборд и сборочные задания по
+пакетам выбранного продукта; при единственном продукте он выбран автоматически.
 
 При старте выполняется освежение, дальше — фоновый интервал (`refresh_interval`,
 по умолчанию 30 мин). Поскольку сборочные задания опрашиваются в том же прогоне,
@@ -159,7 +211,14 @@ port = 8300
 - `journal` / `journal_archive` — живой журнал и архив (общий индекс `events_fts`);
 - `build_tasks`, `task_packages`, `task_stages` — сборочные задания и их этапы;
 - `errata_seen`, `tasks_seen` — дедупликация событий;
-- `runs` — история прогонов освежения.
+- `runs` — история прогонов освежения;
+- `products`, `product_packages`, `product_images` — продукты, их состав и
+  привязанные образы;
+- `image_catalog` — кэш каталога образов (обновляется вручную);
+- `package_meta` — справочник srpm (summary, группа, сопровождающий, `pkghash`);
+- `lists`, `list_items` — сохранённые списки пакетов;
+- `comparisons` — история сравнений (метаданные и снимок статистики; сам отчёт
+  пересчитывается на лету).
 
 Архивация переносит события старше `archive_after_days` и подрезает живой журнал
 до `max_live_rows`; выполняется автоматически при прогоне и вручную (с
@@ -217,7 +276,8 @@ docker compose exec alttrack alttrack watch list   # CLI внутри конте
 
 ```bash
 pip install -e ".[dev]"
-pytest          # 52 теста: дифф, CRUD, задания, архивация, FTS, веб
+pytest          # 118 тестов: дифф, CRUD, задания, архивация, FTS, парсер,
+                # продукты/образы, списки/сравнение, веб
 ```
 
 Тесты не выходят в сеть — API подменяется фейковым клиентом (`tests/conftest.py`).
@@ -226,14 +286,21 @@ pytest          # 52 теста: дифф, CRUD, задания, архивац�
 
 ```
 src/alttrack/
-  api.py       клиент ALTRepo API (httpx, retry, параллелизм)
+  api.py       клиент ALTRepo API (httpx, retry, параллелизм, image/source/repo)
+  rpmparse.py  разбор NEVRA из строк файловых списков (пути, epoch, .rpm)
   config.py    TOML/окружение/путь к БД
   db.py        схема SQLite и миграции
   watchlist.py CRUD отслеживаемых пакетов + проверка веток
-  refresh.py   снимки → дифф → события, батч ACL, errata
+  refresh.py   снимки → дифф → события, батч ACL, errata, backfill
   tasks.py     сборочные задания, таймлайн этапов
   journal.py   запись событий, фильтры, FTS-поиск, статистика
   archive.py   архивация и очистка
+  products.py  продукты: массовое добавление srpm образа, diff-обновление
+  images.py    каталог образов (кэш, фильтры, последний release-образ)
+  metasync.py  справочник package_meta (sync/ensure/lookup)
+  refs.py      справочники rdb: архитектуры и группы ПО (первое заполнение)
+  lists.py     сохранённые списки (файл/образ/ветка) + маппинг в srpm
+  compare.py   сравнение двух списков, статусы, CSV, история
   cli.py       команды typer/rich
   web/         FastAPI + Jinja2 (дублирует CLI)
 ```

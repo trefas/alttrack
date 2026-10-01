@@ -334,6 +334,7 @@ def list_tasks(
     conn: sqlite3.Connection,
     *,
     package: str | None = None,
+    package_ids: Sequence[int] | None = None,
     branch: str | None = None,
     active: bool | None = None,
     outcome: str | None = None,
@@ -345,6 +346,14 @@ def list_tasks(
     if package:
         where.append("tp.package_id = (SELECT id FROM tracked_packages WHERE name = ? COLLATE NOCASE)")
         args.append(package)
+    if package_ids:
+        ids = [int(i) for i in dict.fromkeys(package_ids)]
+        clauses: list[str] = []
+        for start in range(0, len(ids), 900):
+            chunk = ids[start:start + 900]
+            clauses.append(f"tp.package_id IN ({','.join('?' for _ in chunk)})")
+            args.extend(chunk)
+        where.append("(" + " OR ".join(clauses) + ")")
     if branch:
         where.append("bt.branch = ?")
         args.append(branch)

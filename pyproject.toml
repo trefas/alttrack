@@ -30,7 +30,7 @@ alttrack = "alttrack.cli:app"
 where = ["src"]
 
 [tool.setuptools.package-data]
-"alttrack.web" = ["templates/*.html", "static/*"]
+"alttrack.web" = ["templates/*.html", "static/*", "static/fonts/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

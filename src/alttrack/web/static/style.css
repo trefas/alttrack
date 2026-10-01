@@ -6,16 +6,67 @@
   --line: #e2e6ea;
   --accent: #2563eb;
   --accent-ink: #ffffff;
+  --brand: #ff8000;        /* BaseALT brand orange (logo/favicon/active nav) */
   --ok: #16803c;
   --warn: #b45309;
   --bad: #b91c1c;
+}
+
+/* --- Montserrat (SIL OFL 1.1, see /static/fonts/OFL.txt), subsets latin + cyrillic --- */
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-cyrillic-400.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-latin-400.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-cyrillic-600.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-latin-600.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-cyrillic-700.woff2") format("woff2");
+  unicode-range: U+0301, U+0400-045F, U+0490-0491, U+04B0-04B1, U+2116;
+}
+@font-face {
+  font-family: "Montserrat";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("/static/fonts/montserrat-latin-700.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
 * { box-sizing: border-box; }
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-family: "Montserrat", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   background: var(--bg);
   color: var(--ink);
   font-size: 15px;
@@ -36,10 +87,21 @@ a:hover { text-decoration: underline; }
   top: 0;
   z-index: 10;
 }
-.topbar .brand a { color: #fff; font-weight: 700; letter-spacing: .4px; }
+.topbar .brand a {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: .4px;
+}
+.topbar .brand a:hover { text-decoration: none; }
+.brand-mark { display: block; border-radius: 5px; }
 .topbar nav { display: flex; gap: 16px; flex: 1; flex-wrap: wrap; }
 .topbar nav a { color: #cbd5e1; padding: 4px 2px; }
-.topbar nav a.active, .topbar nav a:hover { color: #fff; border-bottom: 2px solid var(--accent); text-decoration: none; }
+.topbar nav a:hover { color: #fff; border-bottom: 2px solid var(--accent); text-decoration: none; }
+.topbar nav a.active { color: #fff; border-bottom: 2px solid var(--brand); text-decoration: none; }
 
 main { max-width: 1180px; margin: 24px auto; padding: 0 20px; }
 footer { max-width: 1180px; margin: 32px auto 24px; padding: 0 20px; color: var(--muted); font-size: 12.5px; }
@@ -126,6 +188,10 @@ input[type=text], input[type=number], input[type=date], select, textarea {
   background: #fff;
   color: var(--ink);
 }
+.checkrow { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.checkitem { font-size: 13.5px; font-weight: 400; }
+.checkitem input { width: auto; margin: 0 4px 0 0; vertical-align: -1px; }
+
 .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
 .inline-form label { margin: 0; font-weight: 600; font-size: 13px; }
 .inline-form input, .inline-form select { width: auto; }
@@ -171,3 +237,47 @@ input[type=text], input[type=number], input[type=date], select, textarea {
 .timeline .when { font-size: 12.5px; color: var(--muted); }
 
 .tag { font-size: 12px; padding: 1px 7px; border-radius: 6px; background: #eef2f7; color: #475569; }
+
+/* --- product selector in the header --- */
+.product-select select {
+  background: #1f2937; color: #e5e7eb; border: 1px solid #374151;
+  border-radius: 7px; padding: 5px 8px; font-size: 13.5px; max-width: 190px;
+}
+.product-select select:hover { border-color: var(--accent); }
+
+/* --- comparison status chips --- */
+.chips { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 14px; }
+.chip {
+  display: inline-block; padding: 5px 12px; border-radius: 999px;
+  background: #eef2f7; color: #475569; font-size: 13px; font-weight: 600;
+  border: 1px solid transparent;
+}
+.chip:hover { text-decoration: none; border-color: var(--accent); color: var(--accent); }
+.chip.active { background: var(--ink); color: #fff; }
+.chip.chip-left_only { background: #dcfce7; color: var(--ok); }
+.chip.chip-right_only { background: #fee2e2; color: var(--bad); }
+.chip.chip-changed { background: #fef3c7; color: var(--warn); }
+.chips .chip.active.chip-left_only,
+.chips .chip.active.chip-right_only,
+.chips .chip.active.chip-changed { color: #fff; background: var(--ink); }
+
+/* --- drag & drop upload --- */
+.dropzone {
+  border: 2px dashed var(--line); border-radius: 10px; padding: 16px;
+  text-align: center; margin-bottom: 10px; background: #fafbfc;
+}
+.dropzone.drag { border-color: var(--accent); background: #eff6ff; }
+.dropzone .linklike, button.linklike {
+  color: var(--accent); cursor: pointer; background: none; border: 0;
+  font: inherit; padding: 0; text-decoration: underline;
+}
+
+/* --- report row popup --- */
+tr.rowlink { cursor: pointer; }
+tr.rowlink:hover td { background: #eff6ff; }
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(15, 23, 42, .55);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal-backdrop .modal { max-width: 520px; width: 92%; margin: 0; }
+.modal h2 { margin-top: 0; word-break: break-all; }

@@ -29,6 +29,12 @@ class FakeClient:
         self.task_versions: dict[tuple[str, str], list[dict[str, Any]]] = {}
         self.search: list[dict[str, Any]] = []
         self.calls: list[str] = []
+        # -- images / repository / mapping (phase "products") -------------
+        self.images: list[dict[str, Any]] = []
+        self.image_pkgs: dict[str, list[dict[str, Any]]] = {}
+        self.source_map: dict[str, dict[str, Any]] = {}
+        self.repo: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self.binary_export: dict[str, list[dict[str, Any]]] = {}
 
     # -- plumbing ---------------------------------------------------------
     def map(self, func, items, *args, **kwargs):
@@ -75,6 +81,58 @@ class FakeClient:
         for name in names:
             out.extend(self.tasks.get(name, []))
         return out[:tasks_limit]
+
+    # -- reference lists (architectures / software groups) ------------------
+    def get(self, path, params=None):
+        self.calls.append(f"get:{path}")
+        if path == "/site/all_pkgset_archs":
+            return {"length": 3, "archs": [
+                {"arch": "x86_64", "count": 0},
+                {"arch": "i586", "count": 0},
+                {"arch": "noarch", "count": 0},
+            ]}
+        if path == "/site/pkgset_categories_count":
+            return {"length": 2, "categories": [
+                {"category": "System/Base", "count": 12},
+                {"category": "Shells", "count": 5},
+            ]}
+        if path == "/version":
+            return {"api_version": "fake", "version": "0.0"}
+        return {}
+
+    # -- images / repository / srpm mapping --------------------------------
+    def image_info(self, **filters) -> list[dict[str, Any]]:
+        self.calls.append("image_info")
+        out = list(self.images)
+        for key in ("branch", "edition", "arch", "release", "type"):
+            if filters.get(key):
+                out = [i for i in out if i.get(key) == filters[key]]
+        return out
+
+    def image_packages(self, uuid: str, *, limit: int = 10000, page: int = 1, **kw):
+        self.calls.append(f"image_packages:{uuid}")
+        pkgs = self.image_pkgs.get(uuid, [])
+        start = (page - 1) * limit
+        return pkgs[start:start + limit]
+
+    def all_image_packages(self, uuid: str, **kwargs) -> list[dict[str, Any]]:
+        return self.image_packages(uuid, **kwargs)
+
+    def source_packages(self, branch: str, names, *, archs=None, batch: int = 5000):
+        self.calls.append(f"source_packages:{branch}")
+        return [
+            dict(self.source_map.get(n, {"name": n, "sourcepkgname": None,
+                                         "status": "not_found"}))
+            for n in dict.fromkeys(names)
+        ]
+
+    def repository_packages(self, branch: str, *, package_type: str = "source"):
+        self.calls.append(f"repository_packages:{branch}")
+        return list(self.repo.get((branch, package_type), []))
+
+    def branch_binary_packages(self, branch: str, *, arch: str | None = None):
+        self.calls.append(f"branch_binary_packages:{branch}")
+        return list(self.binary_export.get(branch, []))
 
 
 def make_pkg_versions(*entries: tuple[str, str, str, str]) -> list[dict[str, Any]]:

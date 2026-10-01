@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block title %}Сравнение — AltTrack{% endblock %}
+{% block content %}
+<h1>Сравнение списков</h1>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+<div class="grid cols-2">
+  <div class="card">
+    <h2>Сравнить два списка</h2>
+    {% if rows | length >= 2 %}
+    <form method="post" action="/compare/run" class="stack">
+      <label>Слева (эталон)</label>
+      <select name="left" required>
+        {% for l in rows %}<option value="{{ l.id }}" {{ 'selected' if pre_left == l.id | string }}>#{{ l.id }} · {{ l.title }} ({{ l.item_count }})</option>{% endfor %}
+      </select>
+      <label>Справа (текущее)</label>
+      <select name="right" required>
+        {% for l in rows %}<option value="{{ l.id }}" {{ 'selected' if (pre_right == l.id | string) or (not pre_right and loop.index == 2) }}>#{{ l.id }} · {{ l.title }} ({{ l.item_count }})</option>{% endfor %}
+      </select>
+      <label>Название (необязательно)</label>
+      <input type="text" name="title" placeholder="Образование 11.2 ↔ p11">
+      <input type="hidden" name="product_id" value="{{ product.id if product else '' }}">
+      <button class="btn" type="submit">Сравнить и сохранить в историю</button>
+    </form>
+    {% else %}
+    <div class="empty">Нужно минимум два списка. <a href="/lists">Создать список →</a></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Пресеты для продукта</h2>
+    {% if product %}
+    <p class="small muted">Продукт: <strong>{{ product.title }}</strong> ({{ product.branch }} · {{ product.edition or '—' }} · {{ product.arch }})</p>
+    <form method="post" action="/compare/preset">
+      <input type="hidden" name="preset" value="release-branch">
+      <button class="btn btn-secondary" type="submit">Образ ↔ репозиторий {{ product.branch }}</button>
+      <p class="hint">Последний release-образ продукта против текущего состояния ветки.</p>
+    </form>
+    <form method="post" action="/compare/preset">
+      <input type="hidden" name="preset" value="release-list">
+      <button class="btn btn-secondary" type="submit">Последний образ ↔ загруженный список</button>
+      <p class="hint">«Сравнить с прошлым релизом»: образ против списка, загруженного из файла.</p>
+    </form>
+    {% else %}
+    <div class="empty">Выберите продукт в шапке — пресеты работают от него.</div>
+    {% endif %}
+    <p class="hint">Группировка отчёта — по исходным (srpm) пакетам; категории берутся из справочника.</p>
+  </div>
+</div>
+
+<div class="card">
+  <h2>История сравнений <span class="muted small">({{ history | length }})</span></h2>
+  {% if history %}
+  <table>
+    <tr><th>ID</th><th>Название</th><th>Статусы</th><th>Создано</th><th></th></tr>
+    {% for c in history %}
+    <tr>
+      <td class="muted">#{{ c.id }}</td>
+      <td><a href="/compare/{{ c.id }}"><strong>{{ c.title }}</strong></a></td>
+      <td class="small">
+        <span class="pill pill-ok">++ {{ c.stats.get('left_only', 0) }}</span>
+        <span class="pill pill-bad">-- {{ c.stats.get('right_only', 0) }}</span>
+        <span class="pill pill-warn">&gt;&gt; {{ c.stats.get('changed', 0) }}</span>
+        <span class="pill">== {{ c.stats.get('same', 0) }}</span>
+      </td>
+      <td class="mono small">{{ c.created_at | dt }}</td>
+      <td class="small">
+        <a href="/compare/{{ c.id }}">отчёт</a> ·
+        <form method="post" action="/compare/{{ c.id }}/delete" style="display:inline"
+              onsubmit="return confirm('Удалить сравнение #{{ c.id }}?');">
+          <button class="linklike" type="submit">удалить</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}
+  <div class="empty">Сравнений ещё нет.</div>
+  {% endif %}
+</div>
+{% endblock %}

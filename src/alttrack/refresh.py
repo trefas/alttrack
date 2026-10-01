@@ -19,7 +19,7 @@ import sqlite3
 import threading
 from typing import Any, Sequence
 
-from . import journal, tasks as tasks_mod, watchlist
+from . import journal, refs, tasks as tasks_mod, watchlist
 from .api import ALTRepoClient, ApiError, PackageNotFound
 from .config import Config
 from .models import (
@@ -575,6 +575,18 @@ def _refresh_locked(
 ) -> RefreshResult:
     run_id = start_run(conn)
     result = RefreshResult(run_id=run_id, started_at=journal.utcnow())
+
+    # First database fill: read the reference lists (architectures, software
+    # groups) from rdb.  Cheap afterwards — ensure() is a single COUNT(*).
+    try:
+        refs_ = refs.ensure(conn, client)
+        if refs_:
+            log.info(
+                "reference lists filled: %s arches, %s categories",
+                refs_["arch"], refs_["category"],
+            )
+    except ApiError as exc:
+        log.debug("reference lists not filled: %s", exc)
 
     packages = watchlist.list_packages(conn, enabled=True)
     if package_ids is not None:

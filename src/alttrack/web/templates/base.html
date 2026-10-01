@@ -3,13 +3,23 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{% block title %}alttrack{% endblock %}</title>
+  <meta name="theme-color" content="#111827">
+  <title>{% block title %}AltTrack{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/static/favicon.ico" sizes="any">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand"><a href="/">alttrack</a></div>
+  <div class="brand">
+    <a href="/"><img class="brand-mark" src="/static/favicon.svg" alt="" width="22" height="22">AltTrack</a>
+  </div>
   <nav>
+    <a href="/products" class="{{ 'active' if request.url.path.startswith('/products') }}">Продукты</a>
+    <a href="/images" class="{{ 'active' if request.url.path.startswith('/images') }}">Образы</a>
+    <a href="/lists" class="{{ 'active' if request.url.path.startswith('/lists') }}">Списки</a>
+    <a href="/compare" class="{{ 'active' if request.url.path.startswith('/compare') }}">Сравнение</a>
     <a href="/packages" class="{{ 'active' if request.url.path.startswith('/packages') }}">Пакеты</a>
     <a href="/journal" class="{{ 'active' if request.url.path.startswith('/journal') }}">Журнал</a>
     <a href="/tasks" class="{{ 'active' if request.url.path.startswith('/tasks') }}">Сборки</a>
@@ -18,6 +28,18 @@
     <a href="/runs" class="{{ 'active' if request.url.path == '/runs' }}">Прогоны</a>
     <a href="/settings" class="{{ 'active' if request.url.path == '/settings' }}">Настройки</a>
   </nav>
+  {% if products %}
+  <form method="post" action="/products/select" class="product-select" title="Продукт: фильтр журнала, заданий и пресетов">
+    <input type="hidden" name="referer"
+           value="{{ request.url.path }}{% if request.url.query %}?{{ request.url.query }}{% endif %}">
+    <select name="product_id" onchange="this.form.submit()">
+      <option value="0" {{ 'selected' if not current_product }}>Все продукты</option>
+      {% for p in products %}
+      <option value="{{ p.id }}" {{ 'selected' if current_product and current_product.id == p.id }}>{{ p.title }}</option>
+      {% endfor %}
+    </select>
+  </form>
+  {% endif %}
   <div class="refresh-box">
     {% if refresh_running %}
       <span class="pill pill-run">идёт освежение…</span>
@@ -30,13 +52,16 @@
 {% if refresh_running %}
 <div class="banner">Выполняется освежение данных из репозиториев. Страница обновится автоматически.</div>
 {% endif %}
+{% if job_running %}
+<div class="banner" id="job-banner">Фоновая задача: <span id="job-stage">{{ job_stage or 'работает…' }}</span> — страница обновится автоматически.</div>
+{% endif %}
 
 <main>
 {% block content %}{% endblock %}
 </main>
 
 <footer>
-  alttrack · база: {{ cfg.db_path }} · интервал освежения: {{ cfg.refresh_interval }} мин
+  AltTrack · база: {{ cfg.db_path }} · интервал освежения: {{ cfg.refresh_interval }} мин
   {% if refresh_last %}· последний прогон: #{{ refresh_last.run_id }}
   <span class="{{ 'ok' if refresh_last.status == 'ok' else 'warn' }}">({{ refresh_last.status }})</span>{% endif %}
 </footer>
@@ -52,6 +77,22 @@ async function triggerRefresh() {
 }
 {% if refresh_running %}
 setTimeout(() => location.reload(), 5000);
+{% endif %}
+{% if job_running %}
+(async function pollJobs() {
+  try {
+    const resp = await fetch('/api/jobs');
+    const jobs = await resp.json();
+    const running = Object.values(jobs).filter(j => j.running);
+    const stage = document.getElementById('job-stage');
+    if (running.length) {
+      if (stage) stage.textContent = running[0].stage || 'работает…';
+      setTimeout(pollJobs, 2000);
+    } else {
+      location.reload();
+    }
+  } catch (e) { setTimeout(pollJobs, 3000); }
+})();
 {% endif %}
 </script>
 {% block scripts %}{% endblock %}

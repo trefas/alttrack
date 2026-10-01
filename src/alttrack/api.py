@@ -110,6 +110,32 @@ class ALTRepoClient:
         futures = [self._pool.submit(func, item, *args, **kwargs) for item in items]
         return [f.result() for f in futures]
 
+    def post(self, path: str, payload: Any) -> Any:
+        """POST ``payload`` as JSON with the same retry/error mapping as GET."""
+        url = f"{self.base_url}{path}"
+        last_error: Exception | None = None
+        for attempt in range(self.max_retries + 1):
+            if attempt:
+                time.sleep(min(2**attempt, 8))
+            try:
+                resp = self._client().post(path, json=payload)
+            except httpx.HTTPError as exc:
+                last_error = exc
+                log.debug("POST failed %s: %s", url, exc)
+                continue
+            if resp.status_code == 404:
+                raise PackageNotFound(f"not found: {url}", url=url, status=404)
+            if resp.status_code == 429 or resp.status_code >= 500:
+                last_error = ApiError(f"HTTP {resp.status_code} for {url}", url=url, status=resp.status_code)
+                continue
+            if resp.status_code >= 400:
+                raise ApiError(f"HTTP {resp.status_code} for {url}", url=url, status=resp.status_code)
+            try:
+                return resp.json()
+            except ValueError as exc:
+                raise ApiError(f"invalid JSON from {url}: {exc}", url=url, status=resp.status_code) from exc
+        raise ApiError(f"request failed after retries: {url}: {last_error}", url=url)
+
     # -- endpoints --------------------------------------------------------
     def version(self) -> dict[str, Any]:
         return self.get("/version")
@@ -206,3 +232,100 @@ class ALTRepoClient:
             except ValueError as exc:
                 raise ApiError(f"invalid JSON from {url}: {exc}", url=url) from exc
         raise ApiError(f"request failed after retries: {url}: {last_error}", url=url)
+
+    # -- images, repositories, binary/source mapping ----------------------
+    def image_info(
+        self,
+        *,
+        branch: str | None = None,
+        edition: str | None = None,
+        arch: str | None = None,
+        release: str | None = None,
+        variant: str | None = None,
+        type: str | None = None,  # noqa: A002 - matches the API parameter name
+    ) -> list[dict[str, Any]]:
+        """Catalog of distribution images (empty list when nothing matches)."""
+        params = {
+            "branch": branch, "edition": edition, "arch": arch,
+            "release": release, "variant": variant, "type": type,
+        }
+        try:
+            data = self.get("/image/image_info", params)
+        except PackageNotFound:
+            return []
+        return list(data.get("images") or [])
+
+    def image_packages(
+        self,
+        uuid: str,
+        *,
+        limit: int = 10000,
+        page: int = 1,
+        component: str | None = None,
+        group: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Binary packages of one image (one page; max 10000 per page)."""
+        data = self.get(
+            "/image/image_packages",
+            {"uuid": uuid, "limit": limit, "page": page,
+             "component": component, "group": group},
+        )
+        return list(data.get("packages") or [])
+
+    def all_image_packages(self, uuid: str, **kwargs: Any) -> list[dict[str, Any]]:
+        """All binary packages of an image (follows pagination)."""
+        limit = int(kwargs.pop("limit", 10000))
+        out: list[dict[str, Any]] = []
+        page = 1
+        while page <= 100:  # safety cap: 1M packages
+            batch = self.image_packages(uuid, limit=limit, page=page, **kwargs)
+            out.extend(batch)
+            if len(batch) < limit:
+                break
+            page += 1
+        return out
+
+    def source_packages(
+        self,
+        branch: str,
+        names: Sequence[str],
+        *,
+        archs: Sequence[str] | None = None,
+        batch: int = 5000,
+    ) -> list[dict[str, Any]]:
+        """Map binary package names to their source packages (POST, batched).
+
+        Returns [{name, sourcepkgname, version, release, archs, status}].
+        """
+        out: list[dict[str, Any]] = []
+        names = list(dict.fromkeys(names))
+        for start in range(0, len(names), batch):
+            payload: dict[str, Any] = {"branch": branch, "packages": names[start:start + batch]}
+            if archs:
+                payload["archs"] = list(archs)
+            try:
+                data = self.post("/packageset/source_packages", payload)
+            except PackageNotFound:
+                # The API answers 404 when nothing in the batch resolves —
+                # that is a valid outcome, not an error.
+                continue
+            out.extend(data.get("packages") or [])
+        return out
+
+    def repository_packages(self, branch: str, *, package_type: str = "source") -> list[dict[str, Any]]:
+        """Full contents of a branch repository.
+
+        ``package_type`` is 'source' or 'binary'.  Elements carry
+        name/version/release/summary/category/maintainer — the reference data
+        that used to be imported from CSV in pkgcmp.
+        """
+        data = self.get(
+            "/site/repository_packages",
+            {"branch": branch, "package_type": package_type},
+        )
+        return list(data.get("packages") or [])
+
+    def branch_binary_packages(self, branch: str, *, arch: str | None = None) -> list[dict[str, Any]]:
+        """Released binary packages of a branch (name/version/release/source)."""
+        data = self.get(f"/export/branch_binary_packages/{branch}", {"arch": arch})
+        return list(data.get("packages") or [])

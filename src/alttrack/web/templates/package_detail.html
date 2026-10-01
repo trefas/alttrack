@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ pkg.name }} — alttrack{% endblock %}
+{% block title %}{{ pkg.name }} — AltTrack{% endblock %}
 {% block content %}
 <h1>
   {{ pkg.name }}
@@ -9,11 +9,26 @@
 
 {% if created %}<div class="success">Пакет добавлен: baseline сохранён, история сборок импортирована.</div>{% endif %}
 {% if saved %}<div class="success">Изменения сохранены.</div>{% endif %}
+{% if busy %}<div class="warning">Задача уже выполняется — дождитесь её завершения.</div>{% endif %}
+{% if backfill_job and not backfill_job.running %}
+  {% if backfill_job.error %}
+  <div class="error">Импорт истории не удался: {{ backfill_job.error }}</div>
+  {% elif backfill_job.last %}
+  <div class="success">История сборок импортирована: {{ backfill_job.last.imported }}
+    событий (лимит {{ backfill_job.last.limit }} на ветку).</div>
+  {% endif %}
+{% endif %}
 
 <div class="inline-form" style="margin-bottom:16px">
   <a class="btn btn-secondary" href="/packages/{{ pkg.id }}/edit">Изменить</a>
   <a class="btn btn-secondary" href="/journal?package={{ pkg.name }}">События в журнале</a>
   <a class="btn btn-secondary" href="/tasks?package={{ pkg.name }}">Сборочные задания</a>
+  <form method="post" action="/packages/{{ pkg.id }}/backfill">
+    <button class="btn btn-secondary btn-small" type="submit"
+            onclick="return confirm('Импортировать историю сборок (до {{ backfill_limit }} на ветку)?');">
+      Импортировать историю сборок
+    </button>
+  </form>
   <form method="post" action="/packages/{{ pkg.id }}/delete" class="inline-form"
         onsubmit="return confirm('Убрать {{ pkg.name }} из отслеживания?');">
     <label class="checkbox-line" style="margin:0">

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Образы — AltTrack{% endblock %}
+{% block content %}
+<h1>Каталог образов <span class="muted small">({{ rows | length }})</span></h1>
+
+{% if error %}<div class="error">{{ error }}</div>{% endif %}
+{% if synced %}<p class="muted small">каталог обновлён: {{ synced | dt }} · rdb.altlinux.org /image/image_info</p>{% endif %}
+
+{% if not current_product %}
+<div class="warning">
+  Массовое добавление пакетов работает через <strong>продукт</strong>: выберите (или создайте)
+  продукт в шапке — тогда в строках образов появится «предпросмотр»,
+  <a href="/products">создать продукт →</a>
+</div>
+{% endif %}
+
+<div class="inline-form" style="margin-bottom:14px">
+  <form method="get" action="/images" class="inline-form">
+    <div class="field"><label>Ветка</label>
+      <select name="branch" onchange="this.form.submit()">
+        <option value="">все</option>
+        {% for b in opts.branches %}<option value="{{ b }}" {{ 'selected' if filters.branch == b }}>{{ b }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>Edition</label>
+      <select name="edition" onchange="this.form.submit()">
+        <option value="">все</option>
+        {% for e in opts.editions %}<option value="{{ e }}" {{ 'selected' if filters.edition == e }}>{{ e }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>Архитектура</label>
+      <select name="arch" onchange="this.form.submit()">
+        <option value="">все</option>
+        {% for a in opts.archs %}<option value="{{ a }}" {{ 'selected' if filters.arch == a }}>{{ a }}</option>{% endfor %}
+      </select>
+    </div>
+    <div class="field"><label>Тип</label>
+      <select name="release" onchange="this.form.submit()">
+        <option value="">все</option>
+        {% for r in opts.releases %}<option value="{{ r }}" {{ 'selected' if filters.release == r }}>{{ r }}</option>{% endfor %}
+      </select>
+    </div>
+    <button class="btn btn-secondary" type="submit">Применить</button>
+  </form>
+  <form method="post" action="/images/refresh" style="margin-left:auto">
+    <button class="btn btn-secondary" type="submit">Обновить каталог</button>
+  </form>
+</div>
+
+{% if rows %}
+<table>
+  <tr><th>Дата</th><th>Ветка</th><th>Edition</th><th>Арх.</th><th>Тип</th><th>Файл / тег</th><th>Действия</th></tr>
+  {% for img in rows %}
+  <tr>
+    <td class="small">{{ img.date[:10] if img.date else '—' }}</td>
+    <td>{{ img.branch }}</td>
+    <td>{{ img.edition or '—' }}</td>
+    <td>{{ img.arch }}</td>
+    <td>
+      <span class="pill {{ 'pill-ok' if img.release == 'release' else 'pill-warn' }}">{{ img.release }}</span>
+      <span class="tag">{{ img.type }}</span>
+    </td>
+    <td class="small">{{ img.file or img.tag }}<br><span class="mono muted">{{ img.uuid[:13] }}…</span></td>
+    <td class="small" style="white-space:nowrap">
+      {% if current_product %}
+      <a href="/products/{{ current_product.id }}?preview={{ img.uuid }}">предпросмотр</a> ·
+      {% endif %}
+      <form method="post" action="/lists/image" style="display:inline">
+        <input type="hidden" name="uuid" value="{{ img.uuid }}">
+        <button class="btn btn-secondary btn-small" type="submit">в список</button>
+      </form>
+    </td>
+  </tr>
+  {% endfor %}
+</table>
+{% else %}
+<div class="empty">Образы не найдены (попробуйте снять фильтры).</div>
+{% endif %}
+{% endblock %}

@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -149,6 +149,114 @@ CREATE VIRTUAL TABLE IF NOT EXISTS events_fts USING fts5(
     text,
     store,
     tokenize = 'unicode61'
+);
+
+-- ------------------------------------------------------------------
+-- Phase "products / images / comparison" (schema v2)
+-- ------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS products (
+    id         INTEGER PRIMARY KEY,
+    title      TEXT NOT NULL,
+    branch     TEXT NOT NULL,
+    edition    TEXT NOT NULL DEFAULT '',
+    arch       TEXT NOT NULL DEFAULT 'x86_64',
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS product_packages (
+    product_id      INTEGER NOT NULL,
+    package_id      INTEGER NOT NULL,
+    added_by        TEXT NOT NULL DEFAULT 'image',   -- image | manual
+    paused_by_image INTEGER NOT NULL DEFAULT 0,
+    added_at        TEXT NOT NULL,
+    PRIMARY KEY (product_id, package_id)
+);
+
+CREATE TABLE IF NOT EXISTS product_images (
+    id            INTEGER PRIMARY KEY,
+    product_id    INTEGER NOT NULL,
+    image_uuid    TEXT NOT NULL,
+    tag           TEXT NOT NULL DEFAULT '',
+    kind          TEXT NOT NULL DEFAULT 'release',   -- release | other
+    date          TEXT,
+    package_count INTEGER NOT NULL DEFAULT 0,
+    added_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS image_catalog (
+    uuid       TEXT PRIMARY KEY,
+    branch     TEXT NOT NULL,
+    edition    TEXT NOT NULL DEFAULT '',
+    arch       TEXT NOT NULL DEFAULT '',
+    variant    TEXT NOT NULL DEFAULT '',
+    type       TEXT NOT NULL DEFAULT '',
+    release    TEXT NOT NULL DEFAULT '',
+    tag        TEXT NOT NULL DEFAULT '',
+    file       TEXT NOT NULL DEFAULT '',
+    date       TEXT,
+    synced_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS package_meta (
+    name       TEXT NOT NULL,
+    kind       TEXT NOT NULL,                 -- source | binary
+    branch     TEXT NOT NULL,
+    version    TEXT NOT NULL DEFAULT '',
+    release    TEXT NOT NULL DEFAULT '',
+    pkghash    TEXT,
+    summary    TEXT NOT NULL DEFAULT '',
+    category   TEXT NOT NULL DEFAULT '',
+    maintainer TEXT NOT NULL DEFAULT '',
+    synced_at  TEXT NOT NULL,
+    PRIMARY KEY (name, kind, branch)
+);
+
+CREATE TABLE IF NOT EXISTS lists (
+    id          INTEGER PRIMARY KEY,
+    title       TEXT NOT NULL,
+    kind        TEXT NOT NULL,                -- file | image | branch
+    product_id  INTEGER,
+    params      TEXT NOT NULL DEFAULT '{}',
+    item_count  INTEGER NOT NULL DEFAULT 0,
+    bad_lines   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS list_items (
+    list_id     INTEGER NOT NULL,
+    name        TEXT NOT NULL COLLATE NOCASE,
+    version     TEXT NOT NULL DEFAULT '',
+    release     TEXT NOT NULL DEFAULT '',
+    arch        TEXT NOT NULL DEFAULT '',
+    summary     TEXT NOT NULL DEFAULT '',
+    source_name TEXT,
+    PRIMARY KEY (list_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS comparisons (
+    id            INTEGER PRIMARY KEY,
+    title         TEXT NOT NULL,
+    product_id    INTEGER,
+    left_list_id  INTEGER NOT NULL,
+    right_list_id INTEGER NOT NULL,
+    stats         TEXT NOT NULL DEFAULT '{}',
+    created_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_packages_pkg ON product_packages (package_id);
+CREATE INDEX IF NOT EXISTS idx_product_images_prod ON product_images (product_id);
+CREATE INDEX IF NOT EXISTS idx_image_catalog_sel ON image_catalog (branch, edition, arch);
+CREATE INDEX IF NOT EXISTS idx_package_meta_branch ON package_meta (branch, kind);
+CREATE INDEX IF NOT EXISTS idx_list_items_name ON list_items (name);
+CREATE INDEX IF NOT EXISTS idx_comparisons_product ON comparisons (product_id);
+
+-- Reference lists from rdb: architectures and software groups (categories).
+CREATE TABLE IF NOT EXISTS reference_lists (
+    kind      TEXT NOT NULL,        -- arch | category
+    value     TEXT NOT NULL,
+    count     INTEGER NOT NULL DEFAULT 0,
+    synced_at TEXT NOT NULL,
+    PRIMARY KEY (kind, value)
 );
 """
 
