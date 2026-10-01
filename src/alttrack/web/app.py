@@ -55,6 +55,25 @@ def _fmt_dt(value: Any) -> str:
     return str(value).replace("T", " ").replace("Z", "")[:19]
 
 
+def _hidden_pills(conn: Any, comparisons: list[compare.Comparison]) -> dict[int, str]:
+    """Per-comparison status whose history pill is repository noise.
+
+    Mirrors :func:`compare.noise_status`: when exactly one side is a
+    repository snapshot, the exclusive rows of that side mean nothing about
+    the product, so their pill is dropped from history lists too.
+    """
+    out: dict[int, str] = {}
+    for c in comparisons:
+        left = lists.get_list(conn, c.left_list_id)
+        right = lists.get_list(conn, c.right_list_id)
+        hidden = compare.noise_status(
+            left.kind if left else "", right.kind if right else ""
+        )
+        if hidden:
+            out[c.id] = hidden
+    return out
+
+
 def _parse_branches(
     branches: Optional[list[str]], submitted: Optional[str]
 ) -> Optional[list[str]]:
@@ -867,10 +886,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 break
 
         comparisons = compare.list_comparisons(conn, product_id=p.id)
-        cmp_right_kinds: dict[int, str] = {}
-        for c in comparisons:
-            right_list = lists.get_list(conn, c.right_list_id)
-            cmp_right_kinds[c.id] = right_list.kind if right_list else ""
+        hidden_pills = _hidden_pills(conn, comparisons)
 
         return templates.TemplateResponse(
             request,
@@ -882,7 +898,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 counts=total_members,
                 product_images=products.product_images(conn, p),
                 comparisons=comparisons,
-                cmp_right_kinds=cmp_right_kinds,
+                hidden_pills=hidden_pills,
                 catalog=catalog_rows,
                 q=q or "",
                 state=state or "",
@@ -1198,10 +1214,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         product = current_product(conn, request)
         rows = lists.list_lists(conn)
         history = compare.list_comparisons(conn)
-        right_kinds: dict[int, str] = {}
-        for c in history:
-            right_list = lists.get_list(conn, c.right_list_id)
-            right_kinds[c.id] = right_list.kind if right_list else ""
+        hidden_pills = _hidden_pills(conn, history)
         pre_left = request.query_params.get("left", "")
         pre_right = request.query_params.get("right", "")
         return templates.TemplateResponse(
@@ -1211,7 +1224,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 request,
                 rows=rows,
                 history=history,
-                right_kinds=right_kinds,
+                hidden_pills=hidden_pills,
                 product=product,
                 status_labels=compare.STATUS_LABELS,
                 pre_left=pre_left,
@@ -1312,7 +1325,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         if size not in COMPARE_PAGE_SIZES:
             size = COMPARE_PAGE_SIZES[1]
         include_extra = extra == "1"
-        result = compare.report(conn, cmp_obj, include_right_extra=include_extra)
+        result = compare.report(conn, cmp_obj, include_extra=include_extra)
         rows = result["rows"]
         if status:
             rows = [r for r in rows if r["status"] == status]
@@ -1347,7 +1360,8 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
                 shown=len(page_rows),
                 status=status or "",
                 include_extra=include_extra,
-                hidden_right_only=result["hidden_right_only"],
+                hidden_status=result["hidden_status"],
+                hidden_count=result["hidden_count"],
                 page=page,
                 page_count=page_count,
                 page_window=_page_window(page, page_count),
@@ -1379,7 +1393,7 @@ def create_app(cfg: Config, *, initial_refresh: bool = True) -> FastAPI:
         cmp_obj = compare.get_comparison(conn, cmp_id)
         if cmp_obj is None:
             raise HTTPException(404, "сравнение не найдено")
-        result = compare.report(conn, cmp_obj, include_right_extra=extra == "1")
+        result = compare.report(conn, cmp_obj, include_extra=extra == "1")
         payload = compare.to_csv(result["rows"], status=status or None)
         from fastapi.responses import Response
 

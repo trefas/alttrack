@@ -1290,7 +1290,7 @@ def compare_show(
             cmp_obj = compare.require_comparison(conn, cmp_id)
         except KeyError:
             _fail(f"сравнение {cmp_id} не найдено")
-        result = compare.report(conn, cmp_obj, include_right_extra=extra)
+        result = compare.report(conn, cmp_obj, include_extra=extra)
     finally:
         conn.close()
 
@@ -1303,9 +1303,10 @@ def compare_show(
             console.print(f"[green]CSV записан:[/green] {csv_out}")
         return
     console.print(f"[bold]#{cmp_obj.id}[/bold] {cmp_obj.title}")
-    if result.get("hidden_right_only"):
+    if result.get("hidden_count"):
+        side = "слева" if result.get("hidden_status") == compare.LEFT_ONLY else "справа"
         console.print(
-            f"[dim]скрыто {result['hidden_right_only']} пакетов репозитория, "
+            f"[dim]скрыто {result['hidden_count']} пакетов репозитория ({side}), "
             "отсутствующих в образе (--extra для показа)[/dim]"
         )
     if status:

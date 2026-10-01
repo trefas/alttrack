@@ -13,7 +13,7 @@
 <div class="chips">
   <a class="chip {{ 'active' if not status }}" href="/compare/{{ cmp.id }}?{{ q_no_status }}">все · {{ total }}</a>
   {% for s in statuses %}
-  {% if not (s == 'right_only' and right_list and right_list.kind == 'branch' and not include_extra) %}
+  {% if not (s == hidden_status and not include_extra) %}
   <a class="chip chip-{{ s }} {{ 'active' if status == s }}" href="/compare/{{ cmp.id }}?{{ q_no_status }}&status={{ s }}">
     {{ status_labels[s] }} · {{ stats[s] }}
   </a>
@@ -21,12 +21,14 @@
   {% endfor %}
 </div>
 
-{% if right_list and right_list.kind == 'branch' %}
+{% if hidden_status %}
 {% if include_extra %}
-<div class="hint">Показаны и пакеты репозитория, которых нет в образе ({{ stats['right_only'] }}) —
+{% if stats[hidden_status] %}
+<div class="hint">Показаны и пакеты репозитория, которых нет в образе ({{ stats[hidden_status] }}) —
   <a href="/compare/{{ cmp.id }}?{{ q_no_extra }}">сравнивать только по пакетам образа</a>.</div>
-{% else %}
-<div class="hint">Скрыто {{ hidden_right_only }} пакетов репозитория, отсутствующих в образе —
+{% endif %}
+{% elif hidden_count %}
+<div class="hint">Скрыто {{ hidden_count }} пакетов репозитория, отсутствующих в образе —
   <a href="/compare/{{ cmp.id }}?{{ q }}&extra=1">показать их</a>.</div>
 {% endif %}
 {% endif %}

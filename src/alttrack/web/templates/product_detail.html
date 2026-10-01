@@ -134,8 +134,11 @@
         <td class="muted">#{{ c.id }}</td>
         <td><a href="/compare/{{ c.id }}">{{ c.title }}</a></td>
         <td class="small">
+          {% set hp = hidden_pills.get(c.id) %}
+          {% if hp != 'left_only' %}
           <span class="pill pill-ok">++{{ c.stats.get('left_only', 0) }}</span>
-          {% if cmp_right_kinds.get(c.id) != 'branch' %}
+          {% endif %}
+          {% if hp != 'right_only' %}
           <span class="pill pill-bad">--{{ c.stats.get('right_only', 0) }}</span>
           {% endif %}
           <span class="pill pill-warn">&gt;&gt;{{ c.stats.get('changed', 0) }}</span>

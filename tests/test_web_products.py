@@ -380,6 +380,43 @@ def test_preset_release_vs_branch(web, conn):
     assert '<span class="pill pill-bad">' not in index.text
 
 
+def test_compare_branch_on_left_hides_repository_noise(web, conn):
+    client, _ = web
+    # repository snapshot as the LEFT side («срез ↔ образ» direction)
+    resp = client.post(
+        "/lists/branch", data={"branch": "p11", "arch": "x86_64"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    client.post(
+        "/lists/file", data={"text": "bash-libs-5.2-alt1.x86_64\n"},
+        follow_redirects=False,
+    )
+    resp = client.post(
+        "/compare/run", data={"left": 1, "right": 2}, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    url = resp.headers["location"]
+
+    page = client.get(url)
+    assert page.status_code == 200
+    # repository-only package (coreutils) is noise on the left side as well
+    assert "coreutils" not in page.text
+    assert "только слева" not in page.text
+    assert "Скрыто" in page.text and "пакетов репозитория" in page.text
+    assert "bash-libs" in page.text          # shared package still compared
+    # …and the hidden rows are available on demand
+    page = client.get(url + "?extra=1")
+    assert "coreutils" in page.text
+    assert "только слева" in page.text
+    # CSV export honours the same filter
+    assert "coreutils" not in client.get(url + "/export").text
+    assert "coreutils" in client.get(url + "/export?extra=1").text
+    # history: the repository-side "++" pill is dropped as well
+    index = client.get("/compare")
+    assert "++ 1" not in index.text
+
+
 def test_modal_css_hides_popup_by_default(web):
     client, _ = web
     css = client.get("/static/style.css")

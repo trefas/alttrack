@@ -247,16 +247,70 @@ def test_report_filters_repository_only_rows(conn, client):
     names = {r["name"] for r in result["rows"]}
     assert "grep" not in names          # exists only in the repository → hidden
     assert "bash-libs" in names         # shared package still compared
-    assert result["hidden_right_only"] == 1
+    assert result["hidden_status"] == compare.RIGHT_ONLY
+    assert result["hidden_count"] == 1
     assert result["stats"][compare.RIGHT_ONLY] == 0
     assert result["stats"][compare.SAME] == 1
     assert result["total"] == len(result["rows"])
 
-    full = compare.report(conn, cmp_obj, include_right_extra=True)
-    assert full["hidden_right_only"] == 0
+    full = compare.report(conn, cmp_obj, include_extra=True)
+    assert full["hidden_status"] == compare.RIGHT_ONLY
+    assert full["hidden_count"] == 0
     assert full["stats"][compare.RIGHT_ONLY] == 1
     grep = [r for r in full["rows"] if r["name"] == "grep"]
     assert grep and grep[0]["status"] == compare.RIGHT_ONLY
+
+
+def test_report_filters_repository_only_rows_when_branch_is_left(conn, client):
+    # «срез репозитория слева ↔ образ справа»: the repository side may just as
+    # well come first — its exclusive rows are noise either way around
+    client.binary_export["p10"] = [
+        {"name": "grep", "version": "3.11", "release": "alt1",
+         "arch": "x86_64", "source": "grep"},
+        {"name": "bash-libs", "version": "5.2", "release": "alt1",
+         "arch": "x86_64", "source": "bash"},
+    ]
+    left, _ = lists.save_branch_list(conn, client, branch="p10")
+    right, _ = lists.save_file_list(
+        conn, text="bash-libs-5.2-alt1.x86_64\n", title="Образ",
+        source_branch="p11", client=client,
+    )
+    cmp_obj = compare.save(conn, left_id=left.id, right_id=right.id)
+
+    result = compare.report(conn, cmp_obj)
+    names = {r["name"] for r in result["rows"]}
+    assert "grep" not in names              # repository-only → hidden on the left too
+    assert "bash-libs" in names
+    assert result["hidden_status"] == compare.LEFT_ONLY
+    assert result["hidden_count"] == 1
+    assert result["stats"][compare.LEFT_ONLY] == 0
+    assert result["stats"][compare.SAME] == 1
+    assert result["total"] == len(result["rows"])
+
+    full = compare.report(conn, cmp_obj, include_extra=True)
+    assert full["hidden_count"] == 0
+    assert full["stats"][compare.LEFT_ONLY] == 1
+
+
+def test_report_keeps_both_sides_when_both_are_branches(conn, client):
+    # branch vs branch: the difference itself is the point → no hiding
+    client.binary_export["p10"] = [
+        {"name": "grep", "version": "3.11", "release": "alt1",
+         "arch": "x86_64", "source": "grep"},
+    ]
+    client.binary_export["p11"] = [
+        {"name": "uniq", "version": "9.4", "release": "alt2",
+         "arch": "x86_64", "source": "coreutils"},
+    ]
+    left, _ = lists.save_branch_list(conn, client, branch="p10")
+    right, _ = lists.save_branch_list(conn, client, branch="p11")
+    cmp_obj = compare.save(conn, left_id=left.id, right_id=right.id)
+
+    result = compare.report(conn, cmp_obj)
+    assert result["hidden_status"] is None
+    assert result["hidden_count"] == 0
+    assert result["stats"][compare.LEFT_ONLY] == 1
+    assert result["stats"][compare.RIGHT_ONLY] == 1
 
 
 def test_report_keeps_right_only_for_non_branch_right(conn, client):
@@ -268,5 +322,6 @@ def test_report_keeps_right_only_for_non_branch_right(conn, client):
     )
     cmp_obj = compare.save(conn, left_id=left.id, right_id=right.id)
     result = compare.report(conn, cmp_obj)
-    assert result["hidden_right_only"] == 0
+    assert result["hidden_status"] is None
+    assert result["hidden_count"] == 0
     assert any(r["status"] == compare.RIGHT_ONLY for r in result["rows"])

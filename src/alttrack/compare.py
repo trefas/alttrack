@@ -180,29 +180,49 @@ def require_comparison(conn: sqlite3.Connection, key: int | str) -> Comparison:
     return found
 
 
+def noise_status(left_kind: str, right_kind: str) -> str | None:
+    """Status that is pure repository noise for this pair of sides.
+
+    A repository snapshot (``kind == "branch"``) contains the whole branch
+    while an image or an uploaded list only ever contains a fraction of it.
+    Whichever side the snapshot is on, its exclusive rows say nothing about
+    the product — unless both sides are snapshots (branch vs branch, where
+    the difference itself is the point).
+    """
+    if right_kind == RIGHT_KIND and left_kind != RIGHT_KIND:
+        return RIGHT_ONLY
+    if left_kind == RIGHT_KIND and right_kind != RIGHT_KIND:
+        return LEFT_ONLY
+    return None
+
+
 def report(
     conn: sqlite3.Connection,
     comparison: Comparison,
     *,
-    include_right_extra: bool = False,
+    include_extra: bool = False,
 ) -> dict[str, Any]:
     """Recompute the report of a stored comparison.
 
-    When the right side is a repository snapshot (``kind == "branch"``),
-    ``right_only`` rows are noise: a single image can never contain the whole
-    branch, so thousands of repository-only packages say nothing about the
-    product.  They are filtered out unless ``include_right_extra`` is set;
-    ``hidden_right_only`` tells how many were filtered (for an UI hint).
+    Repository-noise rows (see :func:`noise_status`) are filtered out unless
+    ``include_extra`` is set.  ``hidden_status`` names the filtered status —
+    it is set even with ``include_extra`` so the UI can build its toggle —
+    while ``hidden_count`` tells how many rows were actually filtered (0 when
+    ``include_extra`` leaves them in).
     """
     result = compute(conn, comparison.left_list_id, comparison.right_list_id)
     result["comparison"] = comparison
-    result["hidden_right_only"] = 0
-    if str(result["right"].get("kind") or "") == RIGHT_KIND and not include_right_extra:
-        rows = [r for r in result["rows"] if r["status"] != RIGHT_ONLY]
+    hidden = noise_status(
+        str(result["left"].get("kind") or ""), str(result["right"].get("kind") or "")
+    )
+    result["hidden_status"] = hidden
+    result["hidden_count"] = 0
+    if hidden is not None and not include_extra:
+        result["hidden_count"] = int(result["stats"].get(hidden, 0))
+        rows = [r for r in result["rows"] if r["status"] != hidden]
         stats = {s: 0 for s in STATUSES}
         for row in rows:
             stats[row["status"]] += 1
-        result["hidden_right_only"] = int(result["stats"].get(RIGHT_ONLY, 0))
         result["rows"] = rows
         result["stats"] = stats
         result["total"] = len(rows)
